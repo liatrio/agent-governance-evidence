@@ -60,7 +60,7 @@ func runCLI(args []string) error {
 	autogovPath := flags.String("autogov", filepath.Join("bin", "autogov"), "path to the built autogov binary")
 	evidencePath := flags.String("agent-governance-evidence", filepath.Join("bin", "agent-governance-evidence"), "path to the built agent-governance-evidence companion binary")
 	companionDir := flags.String("companion", "agent-governance", "path to the agent-governance companion directory")
-	workdir := flags.String("workdir", "", "working directory for signed bundles and VSA output (default: a temp dir; supplied directory is retained)")
+	workdir := flags.String("workdir", "", "new working directory for signed bundles and VSA output (default: a temp dir; supplied path must not exist and is retained)")
 	keep := flags.Bool("keep", false, "keep an automatically created temporary working directory")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -128,14 +128,18 @@ func run(autogovPath, evidenceBinary, companionDir, workdir string, keep bool) e
 }
 
 // prepareWorkdir owns cleanup only for the temporary directory it creates.
-// a caller-supplied path is created when necessary and always remains the
-// caller's responsibility, regardless of -keep.
+// a caller-supplied path must not exist and remains the caller's responsibility,
+// regardless of -keep.
 func prepareWorkdir(workdir string, keep bool) (string, func(), error) {
 	if workdir != "" {
-		if err := os.MkdirAll(workdir, 0o750); err != nil {
+		path := filepath.Clean(workdir)
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			return "", nil, fmt.Errorf("create working directory parents for %s: %w", workdir, err)
+		}
+		if err := os.Mkdir(path, 0o750); err != nil {
 			return "", nil, fmt.Errorf("create working directory %s: %w", workdir, err)
 		}
-		return workdir, func() {}, nil
+		return path, func() {}, nil
 	}
 	dir, err := os.MkdirTemp("", "autogov-agentgov-demo-")
 	if err != nil {

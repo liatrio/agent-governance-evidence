@@ -151,10 +151,15 @@ The demo prints one row per case. Expected: `PASSED`, `PASSED`, `FAILED`,
 `FAILED` per producer with exit code 0 for the two admissible cases and a
 non-zero enforcing exit (after the failed VSA JSON is written) for the rest;
 the `unknown-outcome*` negative also fails. The demo exits non-zero if any
-observed result differs. Pass `-workdir <dir>` to create or reuse a retained
-directory for the signed bundles, trusted root, predicate bodies, and VSA JSON
-files. By default the temporary working directory is removed on exit; pass
-`-keep` only to retain that automatically created temporary directory.
+observed result differs. Pass `-workdir <dir>` to create a new retained directory
+at that exact location for the signed bundles, trusted root, predicate bodies,
+and VSA JSON files. Paths are normalized before creation and reporting. Missing
+parent directories are created, but the requested final path must not exist:
+existing directories (even empty ones), files, and symlinks
+are rejected before any demo subprocess or artifact work, leaving prior content
+untouched. Choose a fresh path for each run. By default the temporary working
+directory is removed on exit; pass `-keep` only to retain that automatically
+created temporary directory.
 
 Equivalent focused tests (the black-box tests build isolated binaries):
 
@@ -234,7 +239,8 @@ stronger state than its evidence supports.
 ## cleanup
 
 - The demo's automatically created working directory is removed on exit unless
-  `-keep` is set. A caller-supplied `-workdir` is always retained.
+  `-keep` is set. A caller-supplied `-workdir` must be a new path and is always
+  retained; the demo never cleans or reuses an existing caller directory.
 - Producer harnesses remove their own `write-marker` temporary directories.
 - The AGT fixture is fully contained in
   `agent-governance/adapters/agt/.venv` and `.wheels`; delete those
