@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -209,6 +212,65 @@ func TestAgentGovernanceDeploymentCommandFailsClosed(t *testing.T) {
 	// missing evidence file
 	if err := run([]string{"--evidence-path", filepath.Join(dir, "missing.json")}); err == nil {
 		t.Error("expected the command to fail for a missing evidence file")
+	}
+}
+
+func TestAgentGovernanceDeploymentCLIRejectsInvalidEvidenceWithoutDisclosure(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "agent-governance-evidence")
+	if output, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build companion CLI: %v\n%s", err, output)
+	}
+
+	const memberCanary = "secret-cli-member-7c927df09e6b4e8a"
+	const numberCanary = "9385417260964213e9999"
+	cases := []struct {
+		name, input, canary string
+	}{
+		{
+			name:   "unknown member",
+			input:  strings.Replace(agentGovernanceTestEvidence, "{", "{\""+memberCanary+"\":true,", 1),
+			canary: memberCanary,
+		},
+		{
+			name:   "unrepresentable number",
+			input:  strings.Replace(agentGovernanceTestEvidence, `"count": 1`, `"count": `+numberCanary, 1),
+			canary: numberCanary,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			caseDir := t.TempDir()
+			evidencePath := filepath.Join(caseDir, "evidence.json")
+			outputPath := filepath.Join(caseDir, "predicate.json")
+			if err := os.WriteFile(evidencePath, []byte(tc.input), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			cmd := exec.Command(binary, "--evidence-path", evidencePath, "--output", outputPath)
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			var exitErr *exec.ExitError
+			if err := cmd.Run(); !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 {
+				t.Fatalf("invalid evidence must exit nonzero, got %v", err)
+			}
+			if strings.Contains(stderr.String(), tc.canary) {
+				t.Errorf("CLI stderr disclosed secret JSON content: %s", stderr.String())
+			}
+			if !strings.Contains(stderr.String(), "invalid agent-governance evidence") {
+				t.Errorf("CLI did not identify invalid evidence: %s", stderr.String())
+			}
+			if stderr.Len() > 512 {
+				t.Errorf("CLI diagnostic exceeded 512 bytes: %d", stderr.Len())
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("invalid evidence wrote %d bytes to stdout", stdout.Len())
+			}
+			if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+				t.Errorf("invalid evidence created an output file: %v", err)
+			}
+		})
 	}
 }
 

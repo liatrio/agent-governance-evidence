@@ -244,7 +244,9 @@ func ParseAgentGovernanceEvidence(data []byte) (*AgentGovernanceDeployment, erro
 
 	var d AgentGovernanceDeployment
 	if err := dec.Decode(&d); err != nil {
-		return nil, fmt.Errorf("invalid agent-governance evidence: %w", err)
+		// Decoder errors can contain unknown member names or invalid values from
+		// the input. Keep those untrusted bytes out of CLI diagnostics.
+		return nil, errors.New("invalid agent-governance evidence: JSON fields or values do not match the schema")
 	}
 	// reject trailing content after the JSON document (dec.More alone misses
 	// trailing '}'/']' bytes, so read the next token and require EOF)
@@ -290,7 +292,8 @@ func readBoundedAgentGovernanceEvidence(reader io.Reader) ([]byte, error) {
 func validateAgentGovernanceEvidencePresence(data []byte) error {
 	var value interface{}
 	if err := json.Unmarshal(data, &value); err != nil {
-		return fmt.Errorf("invalid agent-governance evidence: %w", err)
+		// Raw parse errors may echo input values, including overflowing numbers.
+		return errors.New("invalid agent-governance evidence: JSON document cannot be decoded")
 	}
 
 	var schema map[string]interface{}
