@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"strings"
 
-	pred "github.com/liatrio/autogov/agent-governance/internal/evidence"
+	pred "github.com/liatrio/agent-governance-evidence/internal/evidence"
 )
 
 // InTotoStatementType is the in-toto v1 statement envelope type.

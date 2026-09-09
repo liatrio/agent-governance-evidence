@@ -1,0 +1,7 @@
+{
+  "module": "github.com/liatrio/autogov",
+  "version": "v1.4.0",
+  "sourceCommit": "139fc0f3fe3f1ec7e7c9f0e9768f2b17c183e90e",
+  "moduleSum": "h1:aj+yhS852iL8dKgTaoKh8PYVxKS2zznkfp6SxO6I6Ac=",
+  "binary": ".autogov/bin/autogov-v1.4.0"
+}

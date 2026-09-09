@@ -108,6 +108,29 @@ func TestCheckpointCommandModesAndFailures(t *testing.T) {
 	}
 }
 
+func TestCheckpointVerifyDefaultsToRepositoryRoot(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previous); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var stderr bytes.Buffer
+	if err := run([]string{"-verify"}, &stderr); err != nil {
+		t.Fatalf("default-root verify failed: %v; stderr=%s", err, stderr.String())
+	}
+}
+
 func TestCheckpointRejectsSymlinkedFrozenInput(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {

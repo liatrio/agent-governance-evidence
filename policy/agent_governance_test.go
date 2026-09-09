@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/liatrio/autogov/agent-governance/internal/demokit"
+	"github.com/liatrio/agent-governance-evidence/internal/demokit"
 	"github.com/open-policy-agent/opa/v1/ast"
 	"github.com/open-policy-agent/opa/v1/rego"
 )

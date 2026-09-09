@@ -13,8 +13,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/liatrio/autogov/agent-governance/internal/demokit"
-	pred "github.com/liatrio/autogov/agent-governance/internal/evidence"
+	"github.com/liatrio/agent-governance-evidence/internal/demokit"
+	pred "github.com/liatrio/agent-governance-evidence/internal/evidence"
+	"github.com/liatrio/agent-governance-evidence/internal/testutil"
 	"github.com/open-policy-agent/opa/v1/rego"
 	"github.com/sigstore/sigstore-go/pkg/bundle"
 )
@@ -69,32 +70,13 @@ type resourceDescriptor struct {
 }
 
 func TestMain(m *testing.M) {
-	repoRoot, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	var err error
+	autogovBinary, err = testutil.AutoGovBinary()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "resolve repository root:", err)
+		fmt.Fprintln(os.Stderr, "AutoGov integration setup:", err)
 		os.Exit(1)
 	}
-	buildDir, err := os.MkdirTemp("", "agent-governance-integration-")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "create integration build directory:", err)
-		os.Exit(1)
-	}
-	autogovBinary = filepath.Join(buildDir, "autogov")
-	build := exec.Command("go", "build", "-o", autogovBinary, ".")
-	build.Dir = repoRoot
-	if output, buildErr := build.CombinedOutput(); buildErr != nil {
-		fmt.Fprintf(os.Stderr, "build AutoGov for black-box tests: %v\n%s", buildErr, output)
-		if removeErr := os.RemoveAll(buildDir); removeErr != nil {
-			fmt.Fprintln(os.Stderr, "remove integration build directory after build failure:", removeErr)
-		}
-		os.Exit(1)
-	}
-	code := m.Run()
-	if removeErr := os.RemoveAll(buildDir); removeErr != nil && code == 0 {
-		fmt.Fprintln(os.Stderr, "remove integration build directory:", removeErr)
-		code = 1
-	}
-	os.Exit(code)
+	os.Exit(m.Run())
 }
 
 func agCompanionDir(t *testing.T) string {

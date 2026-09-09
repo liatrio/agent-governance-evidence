@@ -1,9 +1,37 @@
 # Agent-governance companion
 
-A repository-local companion for authoring and demonstrating experimental
-agent-deployment governance evidence. AutoGov remains the generic Sigstore
+An experimental local standalone repository for authoring and demonstrating
+agent-deployment governance evidence. It is not a GitHub publication, release,
+or production policy promotion. AutoGov remains the generic Sigstore
 verification, OPA admission, and VSA engine; this companion owns the v0.1
 agent model, schema, producer fixtures, authoring CLI, and opt-in policy.
+
+## standalone setup
+
+This repository builds independently. It does not download a verifier during
+tests or fall back to a nearby AutoGov checkout. Install the exact AutoGov
+v1.4.0 verifier once, export its absolute path, then run the standalone tasks:
+
+```bash
+./scripts/setup-autogov.sh
+export AUTOGOV_BINARY="$(pwd)/.autogov/bin/autogov-v1.4.0"
+task checkpoint
+task build
+task test
+task lint
+task demo
+```
+
+`scripts/setup-autogov.sh` verifies the immutable Go module version and sum
+recorded in [`compatibility/autogov.json`](compatibility/autogov.json), then
+builds a fresh local executable. It refuses every existing destination,
+including unusable files, directories, and symlinks. If setup reports a
+collision, inspect it and deliberately move it aside before retrying; setup
+never silently reuses or overwrites it. Tests reject an unset, relative,
+missing, non-regular, or non-executable
+`AUTOGOV_BINARY`; they never build AutoGov implicitly. The fixture security
+tests require Python 3.13 and retain the AGT 4.1.0 and wheel-provenance caveat
+described below.
 
 Two evidence producers (one pinned Microsoft AGT fixture, one minimal non-AGT
 fixture) each run the same four controlled conformance cases against the one
@@ -70,21 +98,17 @@ completion step before invoking the CLI; it is not a separate public command.
   and AutoGov is JSON/in-toto artifacts plus CLI execution. There is no public
   Go SDK contract, and neither Go dependency graph imports the other.
 
-## Stewardship and extraction gates
+## Stewardship and current scope
 
 The v0.1 contract remains under the `autogov.dev` namespace with its exact
 published semantics. A community-neutral contract requires a new URI and
-version; v0.1 will not be silently redefined. The companion is incubated in
-this repository and Go module so the existing CI can exercise both sides of
-the artifact boundary.
-
-A later history-preserving move to a separate Apache-2.0 repository is gated
-on all of the following: design-partner validation, an agreed neutral
-namespace, named maintainers and security ownership, and a release/signing
-process. This extraction creates no repository, release, package publication,
-or production policy promotion. [`MOVE_MAP.md`](MOVE_MAP.md) records source
-history, and [`checkpoint.sha256.json`](checkpoint.sha256.json) locks the
-promotion baseline's deterministic outputs, policy digest, and frozen inputs.
+version; v0.1 will not be silently redefined. The companion is independently
+buildable and uses the artifact/CLI boundary to exercise both sides. Its
+standalone suite checks this repository's own Go dependency graph; reverse
+source-repository independence was audited separately and is not continuously
+checked here. [`MOVE_MAP.md`](MOVE_MAP.md) records source history, and
+[`checkpoint.sha256.json`](checkpoint.sha256.json) locks the promotion
+baseline's deterministic outputs, policy digest, and frozen inputs.
 
 ## layout
 
@@ -124,7 +148,7 @@ policy/              the local, opt-in Rego admission gate (NOT part of
 Re-verify all pins against their official sources (network required):
 
 ```bash
-./agent-governance/adapters/agt/verify_pins.sh
+./adapters/agt/verify_pins.sh
 ```
 
 A mismatch or missing artifact is a hard stop — never substitute `latest`,
@@ -142,9 +166,9 @@ transitive provenance limitation remains explicit.
 From a clean checkout of this repository:
 
 ```bash
-# Build both binaries, then run both producers' signed matrices through the
-# companion authoring CLI and AutoGov's offline verifier.
-task agent-governance-demo
+# With AUTOGOV_BINARY set to the setup output, build both companion binaries
+# and run both producers' signed matrices through AutoGov's offline verifier.
+task demo
 ```
 
 The demo prints one row per case. Expected: `PASSED`, `PASSED`, `FAILED`,
@@ -161,20 +185,19 @@ untouched. Choose a fresh path for each run. By default the temporary working
 directory is removed on exit; pass `-keep` only to retain that automatically
 created temporary directory.
 
-Equivalent focused tests (the black-box tests build isolated binaries):
+Equivalent focused tests require the explicit external verifier:
 
 ```bash
-task agent-governance-test
+AUTOGOV_BINARY="$AUTOGOV_BINARY" task test
 ```
 
 Repository-wide verification:
 
 ```bash
-go test ./...
-go vet ./...
+GOTOOLCHAIN=go1.26.6 go vet ./...
 task lint
 task build
-task agent-governance-build
+go mod verify
 ```
 
 ## regenerating producer evidence
@@ -187,13 +210,13 @@ file byte-for-byte. After regeneration, run the focused tests and review the
 fixture diff. To regenerate:
 
 ```bash
-# non-AGT producer (python 3 stdlib only)
-python3 agent-governance/adapters/non-agt/producer.py
+# non-AGT producer (python 3.13 stdlib only)
+python3.13 adapters/non-agt/producer.py
 
 # AGT producer (isolated python 3.13 venv, hash-locked)
-./agent-governance/adapters/agt/setup.sh
-agent-governance/adapters/agt/.venv/bin/python \
-  agent-governance/adapters/agt/producer.py
+./adapters/agt/setup.sh
+adapters/agt/.venv/bin/python \
+  adapters/agt/producer.py
 ```
 
 `setup.sh` refuses to install anything if the downloaded core wheel's sha256
@@ -243,6 +266,6 @@ stronger state than its evidence supports.
   retained; the demo never cleans or reuses an existing caller directory.
 - Producer harnesses remove their own `write-marker` temporary directories.
 - The AGT fixture is fully contained in
-  `agent-governance/adapters/agt/.venv` and `.wheels`; delete those
+  `adapters/agt/.venv` and `.wheels`; delete those
   directories to remove it. Nothing is installed outside this repository
   checkout.

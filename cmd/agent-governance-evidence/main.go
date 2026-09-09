@@ -10,7 +10,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/liatrio/autogov/agent-governance/internal/evidence"
+	"github.com/liatrio/agent-governance-evidence/internal/evidence"
 )
 
 func main() {

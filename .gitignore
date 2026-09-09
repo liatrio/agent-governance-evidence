@@ -1,0 +1,7 @@
+/.autogov/
+/.setup-autogov.*/
+/bin/
+/coverage.out
+/adapters/agt/.venv/
+/adapters/agt/.wheels/
+**/__pycache__/

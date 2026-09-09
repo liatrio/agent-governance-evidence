@@ -20,7 +20,8 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/liatrio/autogov/agent-governance/internal/demokit"
+	"github.com/liatrio/agent-governance-evidence/internal/demokit"
+	"github.com/liatrio/agent-governance-evidence/internal/testutil"
 )
 
 const (
@@ -55,11 +56,15 @@ func main() {
 }
 
 func runCLI(args []string) error {
+	defaultAutoGovPath, err := filepath.Abs(filepath.Join(".autogov", "bin", "autogov-v1.4.0"))
+	if err != nil {
+		return fmt.Errorf("resolve default AutoGov path: %w", err)
+	}
 	flags := flag.NewFlagSet("agent-governance-demo", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	autogovPath := flags.String("autogov", filepath.Join("bin", "autogov"), "path to the built autogov binary")
+	autogovPath := flags.String("autogov", defaultAutoGovPath, "path to the AutoGov v1.4.0 binary installed by scripts/setup-autogov.sh")
 	evidencePath := flags.String("agent-governance-evidence", filepath.Join("bin", "agent-governance-evidence"), "path to the built agent-governance-evidence companion binary")
-	companionDir := flags.String("companion", "agent-governance", "path to the agent-governance companion directory")
+	companionDir := flags.String("companion", ".", "path to the companion directory")
 	workdir := flags.String("workdir", "", "new working directory for signed bundles and VSA output (default: a temp dir; supplied path must not exist and is retained)")
 	keep := flags.Bool("keep", false, "keep an automatically created temporary working directory")
 	if err := flags.Parse(args); err != nil {
@@ -72,11 +77,11 @@ func runCLI(args []string) error {
 }
 
 func run(autogovPath, evidenceBinary, companionDir, workdir string, keep bool) error {
-	if _, err := os.Stat(autogovPath); err != nil {
-		return fmt.Errorf("autogov binary not found at %s (run `task build` first): %w", autogovPath, err)
+	if _, err := testutil.ValidateAutoGovBinary(autogovPath); err != nil {
+		return err
 	}
 	if _, err := os.Stat(evidenceBinary); err != nil {
-		return fmt.Errorf("agent-governance-evidence binary not found at %s (run `task agent-governance-build` first): %w", evidenceBinary, err)
+		return fmt.Errorf("agent-governance-evidence binary not found at %s (run `task build` first): %w", evidenceBinary, err)
 	}
 	absCompanion, err := filepath.Abs(companionDir)
 	if err != nil {

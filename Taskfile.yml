@@ -1,0 +1,45 @@
+version: '3'
+
+vars:
+  BINARY_DIR: bin
+  GOLANGCI_LINT_VERSION: v2.12.2
+
+env:
+  GOTOOLCHAIN: go1.26.6
+
+tasks:
+  setup-autogov:
+    desc: Build the pinned AutoGov v1.4.0 verifier without replacing an existing one
+    cmds:
+      - ./scripts/setup-autogov.sh
+
+  build:
+    desc: Build every companion command
+    cmds:
+      - mkdir -p {{.BINARY_DIR}}
+      - go build -o {{.BINARY_DIR}}/agent-governance-evidence ./cmd/agent-governance-evidence
+      - go build -o {{.BINARY_DIR}}/agent-governance-demo ./cmd/demo
+      - go build -o {{.BINARY_DIR}}/checkpoint ./cmd/checkpoint
+
+  checkpoint:
+    desc: Verify the immutable extraction checkpoint
+    cmds:
+      - go run ./cmd/checkpoint -root . -verify
+
+  test:
+    desc: Run every standalone test with an explicitly supplied verifier
+    cmds:
+      - test -n "$AUTOGOV_BINARY" || (echo 'set AUTOGOV_BINARY to an absolute AutoGov v1.4.0 executable' >&2; exit 1)
+      - go test -count=1 -v ./...
+
+  demo:
+    desc: Run the signed evidence demonstration
+    deps:
+      - build
+    cmds:
+      - '{{.BINARY_DIR}}/agent-governance-demo --autogov "${AUTOGOV_BINARY:-$(pwd)/.autogov/bin/autogov-v1.4.0}" --agent-governance-evidence {{.BINARY_DIR}}/agent-governance-evidence --companion .'
+
+  lint:
+    desc: Lint with golangci-lint v2.12.2
+    cmds:
+      - go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{.GOLANGCI_LINT_VERSION}} run

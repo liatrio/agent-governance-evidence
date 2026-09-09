@@ -9,8 +9,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/liatrio/agent-governance-evidence/internal/testutil"
 )
 
 func TestPrepareWorkdirCreatesCallerSuppliedDirectoryWithoutRemovingIt(t *testing.T) {
@@ -196,24 +199,22 @@ func TestPrepareWorkdirKeepsAutomaticTemporaryDirectoryWhenRequested(t *testing.
 // deterministic library output before it signs every case. run that exact
 // boundary in the ordinary Go suite so the check is not manual-only.
 func TestDemoExercisesCLIAndLibraryBoundary(t *testing.T) {
-	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
-	binary := filepath.Join(t.TempDir(), "autogov")
-	build := exec.Command("go", "build", "-o", binary, ".")
-	build.Dir = root
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build demo binary: %v\n%s", err, output)
+	binary, err := testutil.AutoGovBinary()
+	if err != nil {
+		t.Fatalf("require external AutoGov verifier: %v", err)
 	}
 	evidenceBinary := filepath.Join(t.TempDir(), "agent-governance-evidence")
-	buildEvidence := exec.Command("go", "build", "-o", evidenceBinary, "./agent-governance/cmd/agent-governance-evidence")
+	buildEvidence := exec.Command("go", "build", "-o", evidenceBinary, "./cmd/agent-governance-evidence")
 	buildEvidence.Dir = root
 	if output, err := buildEvidence.CombinedOutput(); err != nil {
 		t.Fatalf("build companion evidence binary: %v\n%s", err, output)
 	}
 	demoBinary := filepath.Join(t.TempDir(), "agent-governance-demo")
-	buildDemo := exec.Command("go", "build", "-o", demoBinary, "./agent-governance/cmd/demo")
+	buildDemo := exec.Command("go", "build", "-o", demoBinary, "./cmd/demo")
 	buildDemo.Dir = root
 	if output, err := buildDemo.CombinedOutput(); err != nil {
 		t.Fatalf("build companion demo binary: %v\n%s", err, output)
@@ -222,7 +223,7 @@ func TestDemoExercisesCLIAndLibraryBoundary(t *testing.T) {
 	demo := exec.Command(demoBinary,
 		"--autogov", binary,
 		"--agent-governance-evidence", evidenceBinary,
-		"--companion", filepath.Join(root, "agent-governance"),
+		"--companion", root,
 		"--workdir", workdir,
 	)
 	output, err := demo.CombinedOutput()
@@ -296,6 +297,9 @@ func TestDemoExercisesCLIAndLibraryBoundary(t *testing.T) {
 			t.Errorf("saved VSA %s result = %q, want %q", artifact, result, wantResult)
 		}
 	}
+	if got := retainedFiles(t, workdir); !reflect.DeepEqual(got, sortedArtifactNames(artifacts)) {
+		t.Fatalf("retained artifact set = %v, want exactly %v", got, sortedArtifactNames(artifacts))
+	}
 	beforeRetry := snapshotTree(t, workdir)
 	retry := exec.Command(demoBinary, demo.Args[1:]...)
 	retryOutput, err := retry.CombinedOutput()
@@ -309,9 +313,40 @@ func TestDemoExercisesCLIAndLibraryBoundary(t *testing.T) {
 	if afterRetry := snapshotTree(t, workdir); !reflect.DeepEqual(afterRetry, beforeRetry) {
 		t.Error("retrying the demo changed the retained artifacts")
 	}
-	if err := run(t.TempDir(), evidenceBinary, filepath.Join(root, "agent-governance"), filepath.Join(t.TempDir(), "bad-autogov-output"), false); err == nil {
+	if err := run(t.TempDir(), evidenceBinary, root, filepath.Join(t.TempDir(), "bad-autogov-output"), false); err == nil {
 		t.Fatal("expected a non-executable AutoGov path to fail without panicking")
 	}
+}
+
+func retainedFiles(t *testing.T, root string) []string {
+	t.Helper()
+	var files []string
+	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func sortedArtifactNames(artifacts map[string]string) []string {
+	names := make([]string, 0, len(artifacts))
+	for name := range artifacts {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 func TestRunCLIRejectsHelpAndPositionalArgumentsBeforeDemo(t *testing.T) {
@@ -323,5 +358,18 @@ func TestRunCLIRejectsHelpAndPositionalArgumentsBeforeDemo(t *testing.T) {
 	}
 	if err := runCLI([]string{"--autogov", filepath.Join(t.TempDir(), "missing")}); err == nil {
 		t.Fatal("expected a missing AutoGov binary to fail")
+	}
+	if err := runCLI([]string{"--autogov", "relative-autogov"}); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("relative explicit AutoGov path error = %v, want absolute-path rejection", err)
+	}
+}
+
+func TestRunCLIDefaultAutoGovPathIsAbsolute(t *testing.T) {
+	err := runCLI(nil)
+	if err == nil {
+		t.Fatal("default demo unexpectedly ran without its companion binary")
+	}
+	if strings.Contains(err.Error(), "must be an absolute path") {
+		t.Fatalf("default AutoGov path remained relative: %v", err)
 	}
 }

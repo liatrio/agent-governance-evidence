@@ -14,14 +14,27 @@ import (
 	"strings"
 	"testing"
 
-	pred "github.com/liatrio/autogov/agent-governance/internal/evidence"
+	pred "github.com/liatrio/agent-governance-evidence/internal/evidence"
 )
 
 const agtCoreWheelSHA256 = "e14a09eceaa88d3f5d572b09643138d95b1d6c349a6e23e5b222f3c0192cec1f"
 
+func requirePython313(t *testing.T) string {
+	t.Helper()
+	python, err := exec.LookPath("python3.13")
+	if err != nil {
+		t.Fatal("python3.13 is required for fixture security tests")
+	}
+	output, err := exec.Command(python, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Output()
+	if err != nil || strings.TrimSpace(string(output)) != "3.13" {
+		t.Fatalf("resolved python3 must be 3.13, got %q (%v)", strings.TrimSpace(string(output)), err)
+	}
+	return python
+}
+
 // the committed producer evidence must stay bound to the committed fixture
 // bytes: if a producer, runtime, policy, or the controlled tool changes, the
-// evidence has to be regenerated (see agent-governance/README.md).
+// evidence has to be regenerated (see README.md).
 
 func baseDir(t *testing.T) string {
 	t.Helper()
@@ -194,10 +207,7 @@ func TestAGTProducerVerifiesPinnedFilesBeforeImport(t *testing.T) {
 }
 
 func TestAGTProducerPinnedFileVerificationIsLoadBearing(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is required for the AGT producer provenance test")
-	}
+	python := requirePython313(t)
 
 	dir := t.TempDir()
 	installedSource := filepath.Join(dir, "synthetic_pkg", "__init__.py")
@@ -304,10 +314,7 @@ namespace["load_pins"]()
 }
 
 func TestAGTProducerIgnoresUnverifiedInstalledBytecode(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is required for the AGT producer bytecode test")
-	}
+	python := requirePython313(t)
 	producer := filepath.Join(baseDir(t), "adapters", "agt", "producer.py")
 	script := `
 import os
@@ -353,10 +360,7 @@ assert policy_evaluator.origin == "source", policy_evaluator.origin
 }
 
 func TestAGTProducerRejectsShadowCorePackage(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is required for the AGT producer shadow-package test")
-	}
+	python := requirePython313(t)
 	producer := filepath.Join(baseDir(t), "adapters", "agt", "producer.py")
 	script := `
 import pathlib
@@ -401,10 +405,7 @@ assert not marker.exists(), "shadow AGT package executed before origin rejection
 }
 
 func TestProducersIgnoreUnverifiedLocalFixtureBytecode(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is required for the fixture bytecode test")
-	}
+	python := requirePython313(t)
 	script := `
 import os
 import pathlib
