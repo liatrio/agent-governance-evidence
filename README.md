@@ -1,8 +1,9 @@
 # Agent-governance companion
 
-An experimental local standalone repository for authoring and demonstrating
-agent-deployment governance evidence. It is not a GitHub publication, release,
-or production policy promotion. AutoGov remains the generic Sigstore
+An experimental standalone companion intended for public distribution,
+authoring, and demonstration of agent-deployment governance evidence. It
+provides no production assurance and is not a production policy promotion.
+AutoGov remains the generic Sigstore
 verification, OPA admission, and VSA engine; this companion owns the v0.1
 agent model, schema, producer fixtures, authoring CLI, and opt-in policy.
 
@@ -109,6 +110,30 @@ source-repository independence was audited separately and is not continuously
 checked here. [`MOVE_MAP.md`](MOVE_MAP.md) records source history, and
 [`checkpoint.sha256.json`](checkpoint.sha256.json) locks the promotion
 baseline's deterministic outputs, policy digest, and frozen inputs.
+
+## Experimental publication
+
+This companion is maintained experimentally by [Ian Hundere](MAINTAINERS.md).
+The intended public distribution is `liatrio/agent-governance-evidence`;
+release verification is deliberately draft-first and release assets are
+immutable only after an explicit coordinator publication. See
+[releasing](docs/releasing.md) for the required evidence and
+[provenance](docs/provenance.md) for exact lineage.
+
+This work was inspired by PolyAgent/PolyProof experiments and a
+coworker-suggested intersection of AutoGov with the Microsoft Agent Governance
+Toolkit. That is inspiration only: it does not copy private prototype code,
+provide an endorsement, or establish production readiness. The relevant public
+references are the [toolkit documentation](https://microsoft.github.io/agent-governance-toolkit/)
+and [source repository](https://github.com/microsoft/agent-governance-toolkit).
+
+The known DW-14 limitation remains: an invalid evidence CLI target can leave
+partial retained demo output because preflight currently only stats the target.
+It is a future fix, not a claim of production assurance.
+
+Producer regeneration is supported only on Darwin/arm64 with Python 3.13,
+where the frozen AGT lock was recorded. Do not regenerate that lock on another
+platform; supporting another platform requires a future explicit pin decision.
 
 ## layout
 
