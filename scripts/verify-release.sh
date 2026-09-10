@@ -2,9 +2,9 @@
 # Read-only verifier for exactly one downloaded five-asset prerelease.
 set -euo pipefail
 
-usage() { echo "usage: $0 --tag TAG --commit SHA --phase draft|published --assets-dir DIR [--repository OWNER/REPO] [--source-dir DIR]" >&2; exit 2; }
-tag= commit= phase= assets= repository=liatrio/agent-governance-evidence source=
-while [ "$#" -gt 0 ]; do case "$1" in --tag) tag=${2-}; shift 2;; --commit) commit=${2-}; shift 2;; --phase) phase=${2-}; shift 2;; --assets-dir) assets=${2-}; shift 2;; --repository) repository=${2-}; shift 2;; --source-dir) source=${2-}; shift 2;; *) usage;; esac; done
+usage() { echo "usage: $0 --tag TAG --commit SHA --phase draft|published --assets-dir DIR [--metadata-file FILE] [--repository OWNER/REPO] [--source-dir DIR]" >&2; exit 2; }
+tag= commit= phase= assets= metadata= repository=liatrio/agent-governance-evidence source=
+while [ "$#" -gt 0 ]; do case "$1" in --tag) tag=${2-}; shift 2;; --commit) commit=${2-}; shift 2;; --phase) phase=${2-}; shift 2;; --assets-dir) assets=${2-}; shift 2;; --metadata-file) metadata=${2-}; shift 2;; --repository) repository=${2-}; shift 2;; --source-dir) source=${2-}; shift 2;; *) usage;; esac; done
 test -n "$tag" && test -n "$commit" && test -n "$assets" || usage
 case "$phase" in draft|published) ;; *) usage;; esac
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -14,10 +14,32 @@ names=("agent-governance-evidence_${tag}_linux-amd64.tar.gz" "agent-governance-e
 for subject in "${names[@]:0:4}"; do
   gh attestation verify "$assets/$subject" -R "$repository" --bundle "$assets/build-provenance.sigstore.json" --source-ref "refs/tags/$tag" --source-digest "$commit" --signer-workflow "$repository/.github/workflows/release.yml" --deny-self-hosted-runners
 done
-release=$(gh release view "$tag" -R "$repository" --json tagName,isDraft,isPrerelease,isImmutable,assets)
-tag_object=$(gh api "repos/$repository/git/ref/tags/$tag" --jq .object.sha)
-peeled_commit=$(gh api "repos/$repository/git/tags/$tag_object" --jq .object.sha)
-python3 - "$phase" "$commit" "$tag" "$release" "$assets" "$peeled_commit" <<'PY'
+if [ "$phase" = draft ]; then
+  test -n "$metadata" || { echo "draft metadata file required" >&2; exit 1; }
+  python3 - "$tag" "$assets" "$metadata" <<'PY'
+import hashlib
+import json, sys
+from pathlib import Path
+tag, assets_dir, metadata_path = sys.argv[1:]
+with open(metadata_path, encoding="utf-8") as handle:
+    r = json.load(handle)
+if r.get("tag") != tag or not r.get("draft") or not r.get("prerelease"):
+    raise SystemExit("unexpected release state")
+names = [f"agent-governance-evidence_{tag}_linux-amd64.tar.gz", f"agent-governance-evidence_{tag}_darwin-arm64.tar.gz", f"agent-governance-evidence_{tag}_source.tar.gz", "SHA256SUMS", "build-provenance.sigstore.json"]
+expected = {p.name: "sha256:" + hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in Path(assets_dir).iterdir()}
+recorded_assets = r.get("assets", [])
+if len(recorded_assets) != 5 or len({a.get("name") for a in recorded_assets}) != 5:
+    raise SystemExit("release metadata asset set contains missing or duplicate assets")
+recorded = {a.get("name"): a.get("digest") for a in recorded_assets}
+if recorded != expected or set(recorded) != set(names):
+    raise SystemExit("release metadata asset names or digests mismatch")
+PY
+else
+  release=$(gh release view "$tag" -R "$repository" --json tagName,isDraft,isPrerelease,isImmutable,assets)
+  tag_object=$(gh api "repos/$repository/git/ref/tags/$tag" --jq .object.sha)
+  peeled_commit=$(gh api "repos/$repository/git/tags/$tag_object" --jq .object.sha)
+  python3 - "$phase" "$commit" "$tag" "$release" "$assets" "$peeled_commit" <<'PY'
 import json, sys
 import hashlib
 from pathlib import Path
@@ -39,8 +61,6 @@ remote = {a.get("name"): a.get("digest") for a in remote_assets}
 if remote != expected or set(remote) != set(names):
     raise SystemExit("release API asset names or digests mismatch")
 PY
-
-if [ "$phase" = published ]; then
   gh release verify "$tag" -R "$repository"
   for asset in "${names[@]}"; do
     gh release verify-asset "$tag" "$assets/$asset" -R "$repository"

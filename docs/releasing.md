@@ -25,11 +25,14 @@ gh workflow run verify-release.yml -R liatrio/agent-governance-evidence \
   -f tag="$tag" -f commit="$commit" -f phase=draft
 ```
 
-Check that the verification workflow revision/run commit and both native jobs
-match `$commit`. Re-read immutable-release enablement, both tag rulesets, and
-the tag's peeled commit immediately before the coordinator explicitly
-publishes. No draft, source asset, or tag is overwritten: a collision or
-defect requires a new prerelease.
+The dispatched draft verification workflow uses a same-run split: one
+retriever job with `contents: write` reads the live draft metadata and
+downloads the five assets, then the native verifier jobs run with
+`contents: read` only against that artifact handoff. Check that the workflow
+revision/run commit and both native jobs match `$commit`. Re-read
+immutable-release enablement, both tag rulesets, and the tag's peeled commit
+immediately before the coordinator explicitly publishes. No draft, source
+asset, or tag is overwritten: a collision or defect requires a new prerelease.
 
 ```bash
 gh release edit "$tag" -R liatrio/agent-governance-evidence --draft=false
@@ -52,8 +55,9 @@ gh workflow run verify-release.yml -R liatrio/agent-governance-evidence \
 ```
 
 Again check the published verification run's workflow revision, run commit,
-and both native jobs against `$commit`; dispatching the protected tag does not
-replace that evidence check.
+and both native jobs against `$commit`; the published path skips the retriever
+job and re-downloads from the public release APIs, and dispatching the
+protected tag does not replace that evidence check.
 
 A failure never authorizes replacement, bypass, or source cutover; publish a
 new prerelease instead.

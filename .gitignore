@@ -5,4 +5,6 @@
 /release-assets/
 /adapters/agt/.venv/
 /adapters/agt/.wheels/
+/_bmad-output/implementation-artifacts/.memlog.md
+/_bmad-output/implementation-artifacts/implementation-evidence/
 **/__pycache__/
