@@ -9,12 +9,34 @@ test -n "$tag" && test -n "$commit" && test -n "$assets" || usage
 case "$phase" in draft|published) ;; *) usage;; esac
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 source=${source:-$root}
+release_json() {
+  if [ "$phase" = draft ]; then
+    python3 - "$tag" "$(gh api "repos/$repository/releases?per_page=100")" <<'PY'
+import json, sys
+tag, payload = sys.argv[1:]
+releases = json.loads(payload)
+for release in releases:
+    if release.get("tag_name") == tag:
+        json.dump({
+            "tagName": release.get("tag_name"),
+            "isDraft": release.get("draft"),
+            "isPrerelease": release.get("prerelease"),
+            "isImmutable": release.get("immutable"),
+            "assets": [{"name": asset.get("name"), "digest": asset.get("digest")} for asset in release.get("assets", [])],
+        }, sys.stdout)
+        sys.exit(0)
+raise SystemExit("release not found")
+PY
+    return
+  fi
+  gh release view "$tag" -R "$repository" --json tagName,isDraft,isPrerelease,isImmutable,assets
+}
 python3 "$root/scripts/release_guard.py" --tag "$tag" --commit "$commit" --assets-dir "$assets" --source-dir "$source"
 names=("agent-governance-evidence_${tag}_linux-amd64.tar.gz" "agent-governance-evidence_${tag}_darwin-arm64.tar.gz" "agent-governance-evidence_${tag}_source.tar.gz" SHA256SUMS build-provenance.sigstore.json)
 for subject in "${names[@]:0:4}"; do
   gh attestation verify "$assets/$subject" -R "$repository" --bundle "$assets/build-provenance.sigstore.json" --source-ref "refs/tags/$tag" --source-digest "$commit" --signer-workflow "$repository/.github/workflows/release.yml" --deny-self-hosted-runners
 done
-release=$(gh release view "$tag" -R "$repository" --json tagName,isDraft,isPrerelease,isImmutable,assets)
+release=$(release_json)
 tag_object=$(gh api "repos/$repository/git/ref/tags/$tag" --jq .object.sha)
 peeled_commit=$(gh api "repos/$repository/git/tags/$tag_object" --jq .object.sha)
 python3 - "$phase" "$commit" "$tag" "$release" "$assets" "$peeled_commit" <<'PY'

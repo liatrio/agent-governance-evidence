@@ -453,20 +453,23 @@ func TestVerifyExactAttestationsDraftAndPublishedProofs(t *testing.T) {
 	d := assets(t, source, commit)
 	mock, ghlog, execlog := ghMock(t)
 	release := releaseJSON(t, d, true, true, false, testTag, nil)
-	e := verificationEnv(mock, ghlog, execlog, d, commit, release)
+	e := verificationEnv(t, mock, ghlog, execlog, d, commit, release, releaseListJSON(t, d, true, true, false, testTag, nil))
 	out, err := verify(t, e, verifyArgs(d, source, commit, "draft")...)
 	if err != nil {
 		t.Fatalf("valid draft failed: %v\n%s", err, out)
 	}
 	body := mustRead(t, ghlog)
 	assertExactAttestations(t, body, d)
+	if !strings.Contains(body, "api repos/liatrio/agent-governance-evidence/releases?per_page=100") || strings.Contains(body, "release view "+testTag) {
+		t.Fatalf("draft metadata lookup was not list-only:\n%s", body)
+	}
 	if strings.Contains(body, "release verify ") {
 		t.Fatalf("draft requested immutable proof:\n%s", body)
 	}
 	t.Run("attestation-failure", func(t *testing.T) {
 		d := assets(t, source, commit)
 		m, g, x := ghMock(t)
-		e := append(verificationEnv(m, g, x, d, commit, releaseJSON(t, d, true, true, false, testTag, nil)), "GH_FAIL=attestation")
+		e := append(verificationEnv(t, m, g, x, d, commit, releaseJSON(t, d, true, true, false, testTag, nil), releaseListJSON(t, d, true, true, false, testTag, nil)), "GH_FAIL=attestation")
 		out, err := verify(t, e, verifyArgs(d, source, commit, "draft")...)
 		if err == nil || !strings.Contains(out, "attestation failure") {
 			t.Fatalf("attestation failure passed: %v\n%s", err, out)
@@ -477,7 +480,7 @@ func TestVerifyExactAttestationsDraftAndPublishedProofs(t *testing.T) {
 	truncate(t, ghlog)
 	truncate(t, execlog)
 	published := releaseJSON(t, d, false, true, true, testTag, nil)
-	e = verificationEnv(mock, ghlog, execlog, d, commit, published)
+	e = verificationEnv(t, mock, ghlog, execlog, d, commit, published, releaseListJSON(t, d, false, true, true, testTag, nil))
 	out, err = verify(t, e, verifyArgs(d, source, commit, "published")...)
 	if err != nil {
 		t.Fatalf("published failed: %v\n%s", err, out)
@@ -496,7 +499,7 @@ func TestVerifyExactAttestationsDraftAndPublishedProofs(t *testing.T) {
 	t.Run("published-attestation-failure", func(t *testing.T) {
 		d := assets(t, source, commit)
 		m, g, x := ghMock(t)
-		e := append(verificationEnv(m, g, x, d, commit, releaseJSON(t, d, false, true, true, testTag, nil)), "GH_FAIL=attestation")
+		e := append(verificationEnv(t, m, g, x, d, commit, releaseJSON(t, d, false, true, true, testTag, nil), releaseListJSON(t, d, false, true, true, testTag, nil)), "GH_FAIL=attestation")
 		out, err := verify(t, e, verifyArgs(d, source, commit, "published")...)
 		if err == nil || !strings.Contains(out, "attestation failure") {
 			t.Fatalf("published attestation failure passed: %v\n%s", err, out)
@@ -508,13 +511,31 @@ func TestVerifyExactAttestationsDraftAndPublishedProofs(t *testing.T) {
 		t.Run("failure-"+failure, func(t *testing.T) {
 			d := assets(t, source, commit)
 			m, g, x := ghMock(t)
-			e := append(verificationEnv(m, g, x, d, commit, releaseJSON(t, d, false, true, true, testTag, nil)), "GH_FAIL="+failure)
+			e := append(verificationEnv(t, m, g, x, d, commit, releaseJSON(t, d, false, true, true, testTag, nil), releaseListJSON(t, d, false, true, true, testTag, nil)), "GH_FAIL="+failure)
 			out, err := verify(t, e, verifyArgs(d, source, commit, "published")...)
 			if err == nil || !strings.Contains(out, "immutable verification failure") {
 				t.Fatalf("proof failure passed: %v\n%s", err, out)
 			}
 			assertEmpty(t, x)
 		})
+	}
+}
+
+func TestVerifyDraftLookupSucceedsWhenByTagWould404(t *testing.T) {
+	source, commit := gitSource(t)
+	d := assets(t, source, commit)
+	mock, ghlog, execlog := ghMock(t)
+	e := append(
+		verificationEnv(t, mock, ghlog, execlog, d, commit, releaseJSON(t, d, true, true, false, testTag, nil), releaseListJSON(t, d, true, true, false, testTag, nil)),
+		"GH_FAIL=release-view",
+	)
+	out, err := verify(t, e, verifyArgs(d, source, commit, "draft")...)
+	if err != nil {
+		t.Fatalf("draft lookup failed when list had the draft: %v\n%s\ngh log:\n%s", err, out, mustRead(t, ghlog))
+	}
+	body := mustRead(t, ghlog)
+	if !strings.Contains(body, "api repos/liatrio/agent-governance-evidence/releases?per_page=100") || strings.Contains(body, "release view "+testTag) {
+		t.Fatalf("draft lookup used the wrong gh path:\n%s", body)
 	}
 }
 
@@ -559,36 +580,51 @@ func TestVerifyReleaseMetadataFailuresBlockExecution(t *testing.T) {
 	source, commit := gitSource(t)
 	for _, tc := range []struct {
 		name, phase, want, mockCommit string
-		makeJSON                      func(*testing.T, string) string
+		makeViewJSON                  func(*testing.T, string) string
+		makeListJSON                  func(*testing.T, string) string
 	}{
-		{"duplicate", "draft", "missing or duplicate", commit, func(t *testing.T, d string) string {
-			return releaseJSON(t, d, true, true, false, testTag, []map[string]string{{"name": "SHA256SUMS"}, {"name": "SHA256SUMS"}, {"name": "a"}, {"name": "b"}, {"name": "c"}, {"name": "d"}})
+		{"duplicate", "draft", "missing or duplicate", commit, nil, func(t *testing.T, d string) string {
+			return releaseListJSON(t, d, true, true, false, testTag, []map[string]string{{"name": "SHA256SUMS"}, {"name": "SHA256SUMS"}, {"name": "a"}, {"name": "b"}, {"name": "c"}, {"name": "d"}})
 		}},
-		{"missing", "draft", "missing or duplicate", commit, func(t *testing.T, d string) string {
+		{"missing", "draft", "missing or duplicate", commit, nil, func(t *testing.T, d string) string {
 			x := remote(t, d)
-			return releaseJSON(t, d, true, true, false, testTag, x[:4])
+			return releaseListJSON(t, d, true, true, false, testTag, x[:4])
 		}},
-		{"extra", "draft", "names or digests mismatch", commit, func(t *testing.T, d string) string {
+		{"extra", "draft", "names or digests mismatch", commit, nil, func(t *testing.T, d string) string {
 			x := remote(t, d)
 			x[4]["name"] = "extra"
-			return releaseJSON(t, d, true, true, false, testTag, x)
+			return releaseListJSON(t, d, true, true, false, testTag, x)
 		}},
-		{"bad-digest", "draft", "names or digests mismatch", commit, func(t *testing.T, d string) string {
+		{"bad-digest", "draft", "names or digests mismatch", commit, nil, func(t *testing.T, d string) string {
 			x := remote(t, d)
 			x[0]["digest"] = "sha256:" + strings.Repeat("0", 64)
-			return releaseJSON(t, d, true, true, false, testTag, x)
+			return releaseListJSON(t, d, true, true, false, testTag, x)
 		}},
-		{"wrong-tag", "draft", "release identity", commit, func(t *testing.T, d string) string {
-			return releaseJSON(t, d, true, true, false, "v9.9.9-alpha.9", nil)
+		{"wrong-tag", "draft", "release not found", commit, nil, func(t *testing.T, d string) string {
+			return releaseListJSON(t, d, true, true, false, "v9.9.9-alpha.9", nil)
 		}},
-		{"moved-tag", "draft", "release identity", strings.Repeat("0", 40), func(t *testing.T, d string) string { return releaseJSON(t, d, true, true, false, testTag, nil) }},
-		{"not-prerelease", "draft", "unexpected release state", commit, func(t *testing.T, d string) string { return releaseJSON(t, d, true, false, false, testTag, nil) }},
-		{"not-immutable", "published", "not immutable", commit, func(t *testing.T, d string) string { return releaseJSON(t, d, false, true, false, testTag, nil) }},
+		{"moved-tag", "draft", "release identity", strings.Repeat("0", 40), nil, func(t *testing.T, d string) string {
+			return releaseListJSON(t, d, true, true, false, testTag, nil)
+		}},
+		{"not-prerelease", "draft", "unexpected release state", commit, nil, func(t *testing.T, d string) string {
+			return releaseListJSON(t, d, true, false, false, testTag, nil)
+		}},
+		{"not-immutable", "published", "not immutable", commit, func(t *testing.T, d string) string {
+			return releaseJSON(t, d, false, true, false, testTag, nil)
+		}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := assets(t, source, commit)
 			m, g, x := ghMock(t)
-			e := verificationEnv(m, g, x, d, commit, tc.makeJSON(t, d))
+			view := releaseJSON(t, d, false, true, true, testTag, nil)
+			list := releaseListJSON(t, d, true, true, false, testTag, nil)
+			if tc.phase == "draft" {
+				view = releaseJSON(t, d, true, true, false, testTag, nil)
+				list = tc.makeListJSON(t, d)
+			} else if tc.makeViewJSON != nil {
+				view = tc.makeViewJSON(t, d)
+			}
+			e := verificationEnv(t, m, g, x, d, commit, view, list)
 			if tc.name == "moved-tag" {
 				e = append(e, "PEELED_COMMIT="+tc.mockCommit)
 			}
@@ -609,7 +645,7 @@ func TestChangedSourceCannotFallThroughToExecution(t *testing.T) {
 	writeTar(t, filepath.Join(d, sourceName()), e)
 	writeSums(t, d)
 	m, g, x := ghMock(t)
-	out, err := verify(t, verificationEnv(m, g, x, d, commit, releaseJSON(t, d, true, true, false, testTag, nil)), verifyArgs(d, source, commit, "draft")...)
+	out, err := verify(t, verificationEnv(t, m, g, x, d, commit, releaseJSON(t, d, true, true, false, testTag, nil), releaseListJSON(t, d, true, true, false, testTag, nil)), verifyArgs(d, source, commit, "draft")...)
 	if err == nil || !strings.Contains(out, "does not exactly match") {
 		t.Fatalf("source equality guard failed: %v\n%s", err, out)
 	}
@@ -879,6 +915,25 @@ func releaseJSON(t *testing.T, d string, draft, pre, immutable bool, releaseTag 
 	}
 	return string(b)
 }
+func releaseListJSON(t *testing.T, d string, draft, pre, immutable bool, releaseTag string, override []map[string]string) string {
+	t.Helper()
+	if override == nil {
+		override = remote(t, d)
+	}
+	b, err := json.Marshal([]map[string]any{
+		{
+			"tag_name":   releaseTag,
+			"draft":      draft,
+			"prerelease": pre,
+			"immutable":  immutable,
+			"assets":     override,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
 
 func ghMock(t *testing.T) (string, string, string) {
 	t.Helper()
@@ -890,24 +945,42 @@ func ghMock(t *testing.T) (string, string, string) {
 	script := `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$GH_LOG"
-case "$1 $2" in
-"attestation verify")
+case "$1" in
+attestation)
+ test "$2" = verify
  test "$#" -eq 14
  case "$3" in "$ASSETS_DIR/agent-governance-evidence_v0.1.0-alpha.1_linux-amd64.tar.gz"|"$ASSETS_DIR/agent-governance-evidence_v0.1.0-alpha.1_darwin-arm64.tar.gz"|"$ASSETS_DIR/agent-governance-evidence_v0.1.0-alpha.1_source.tar.gz"|"$ASSETS_DIR/SHA256SUMS");; *) exit 71;; esac
  test "$4" = -R; test "$5" = liatrio/agent-governance-evidence; test "$6" = --bundle; test "$7" = "$ASSETS_DIR/build-provenance.sigstore.json"
  test "$8" = --source-ref; test "$9" = refs/tags/v0.1.0-alpha.1; test "${10}" = --source-digest; test "${11}" = "$COMMIT"; test "${12}" = --signer-workflow; test "${13}" = liatrio/agent-governance-evidence/.github/workflows/release.yml; test "${14}" = --deny-self-hosted-runners
  test "${GH_FAIL-}" != attestation || { echo attestation failure >&2; exit 47; };;
-"release view") printf '%s' "$RELEASE_JSON";;
-"release verify") test "${GH_FAIL-}" != release || { echo immutable verification failure >&2; exit 48; };;
-"release verify-asset") test "$4" = "$ASSETS_DIR/$(basename "$4")"; test "${GH_FAIL-}" != "$(basename "$4")" || { echo immutable verification failure >&2; exit 49; };;
-"api "*) case "$2" in *"/git/ref/tags/"*) echo object;; *) echo "${PEELED_COMMIT:-$COMMIT}";; esac;;
-*) exit 99;; esac
+release)
+ case "$2" in
+ view) test "${GH_FAIL-}" != release-view || { echo release not found >&2; exit 46; }; cat "$RELEASE_JSON_FILE";;
+ verify) test "${GH_FAIL-}" != release || { echo immutable verification failure >&2; exit 48; };;
+ verify-asset) test "$4" = "$ASSETS_DIR/$(basename "$4")"; test "${GH_FAIL-}" != "$(basename "$4")" || { echo immutable verification failure >&2; exit 49; };;
+ *) exit 97;;
+ esac;;
+api)
+ case "$2" in
+ repos/*/releases?per_page=100) cat "$RELEASE_LIST_JSON_FILE";;
+ repos/*/git/ref/tags/*) echo object;;
+ repos/*/git/tags/*) echo "${PEELED_COMMIT:-$COMMIT}";;
+ *) exit 98;;
+ esac;;
+*) exit 99;;
+esac
 `
 	mustWrite(t, filepath.Join(bin, "gh"), []byte(script), 0755)
 	return bin, log, execLog
 }
-func verificationEnv(m, g, x, d, c, r string) []string {
-	return []string{"PATH=" + m + ":" + os.Getenv("PATH"), "GH_LOG=" + g, "EXEC_LOG=" + x, "ASSETS_DIR=" + d, "COMMIT=" + c, "RELEASE_JSON=" + r}
+func verificationEnv(t *testing.T, m, g, x, d, c, r, list string) []string {
+	t.Helper()
+	dir := t.TempDir()
+	releaseFile := filepath.Join(dir, "release.json")
+	listFile := filepath.Join(dir, "release-list.json")
+	mustWrite(t, releaseFile, []byte(r), 0644)
+	mustWrite(t, listFile, []byte(list), 0644)
+	return []string{"PATH=" + m + ":" + os.Getenv("PATH"), "GH_LOG=" + g, "EXEC_LOG=" + x, "ASSETS_DIR=" + d, "COMMIT=" + c, "RELEASE_JSON_FILE=" + releaseFile, "RELEASE_LIST_JSON_FILE=" + listFile}
 }
 
 func assertExactAttestations(t *testing.T, body, assetsDir string) {
