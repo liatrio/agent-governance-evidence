@@ -25,41 +25,36 @@ jobs:
           set -euo pipefail
 
           response="$(mktemp)"
+          trap 'rm -f "$response"' EXIT
           set +e
           gh api --include "$RELEASE_PATH" >"$response"
           rc=$?
           set -e
 
-          cat "$response"
-
-          http_status="$(python3 - "$response" <<'PY'
+          python3 - "$response" "$rc" <<'PY'
+          import json
+          import os
           import re
           import sys
           from pathlib import Path
 
           text = Path(sys.argv[1]).read_text()
-          for line in text.splitlines():
+          rc = int(sys.argv[2])
+          lines = text.splitlines()
+          http_status = None
+          for line in lines:
               match = re.match(r"^HTTP/\S+\s+(\d{3})(?:\s|$)", line.strip())
               if match:
-                  print(match.group(1))
-                  raise SystemExit(0)
-          raise SystemExit(1)
-          PY
-          )"
-          echo "numeric_status=$http_status"
+                  http_status = match.group(1)
+                  break
+          if http_status is None:
+              print("probe failed: missing numeric http status")
+              raise SystemExit(1)
+          print(f"numeric_status={http_status}")
+          if rc != 0 or http_status != "200":
+              print(f"probe failed: gh api rc={rc} status={http_status}")
+              raise SystemExit(1)
 
-          if [ "$rc" -ne 0 ] || [ "$http_status" != "200" ]; then
-            echo "probe failed: gh api rc=$rc status=$http_status"
-            exit 1
-          fi
-
-          python3 - "$response" <<'PY'
-          import json
-          import sys
-          from pathlib import Path
-
-          text = Path(sys.argv[1]).read_text()
-          lines = text.splitlines()
           start = None
           for i, line in enumerate(lines):
               if line.strip().startswith("{"):
@@ -79,9 +74,9 @@ jobs:
           print(f"draft={actual_draft}")
 
           if (
-              str(actual_id) != "386593269"
-              or actual_tag != "v0.1.0-alpha.2"
-              or actual_draft is not True
+              str(actual_id) != os.environ["EXPECTED_ID"]
+              or actual_tag != os.environ["EXPECTED_TAG"]
+              or actual_draft != (os.environ["EXPECTED_DRAFT"] == "true")
           ):
               print("probe failed: release identity mismatch")
               raise SystemExit(1)
