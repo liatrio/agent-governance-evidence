@@ -1,0 +1,51 @@
+name: verify release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact prerelease tag
+        required: true
+        type: string
+      commit:
+        description: Expected peeled tag commit
+        required: true
+        type: string
+      phase:
+        description: Release state being verified
+        required: true
+        type: choice
+        options: [draft, published]
+
+permissions:
+  contents: read
+
+jobs:
+  native-release-verification:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.6'
+          check-latest: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+          architecture: ${{ runner.os == 'macOS' && 'arm64' || 'x64' }}
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          assets=$(mktemp -d "$RUNNER_TEMP/agent-governance-release-assets.XXXXXX")
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$assets" --pattern '*'
+          ./scripts/verify-release.sh --tag "$TAG" --commit "$COMMIT" --phase "${{ inputs.phase }}" --assets-dir "$assets" --repository "$GITHUB_REPOSITORY" --source-dir "$GITHUB_WORKSPACE"

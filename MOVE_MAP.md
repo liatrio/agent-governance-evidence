@@ -85,3 +85,28 @@ The extracted repository has distinct commit identities and signatures from
 the AutoGov source history. Original source signatures are not preserved in
 the extracted history; the historical mapping above remains the provenance
 record.
+
+## Canonical extraction-to-publication mapping
+
+Publication retains the following exact original-to-extracted commit mapping.
+The nine original commits were signed; the path-relocated extracted commits are
+unsigned, so source signatures remain verifiable only in liatrio/autogov.
+
+| Original commit | Extracted commit |
+|---|---|
+| 6630b21df5ea247eca2ad6310f5294731502c765 | b0bbf547aa3c30215132d9efb76a0edcd1bda094 |
+| c11a1b0fbe02de266ba11963abedd0d07f427be9 | fae418d917c2444ad75f75afa6b49dcf588d5cc0 |
+| c4b06485139f1fc579eda277e605eece461f13c9 | 7ed5ed081d7b2557bde50512d55f73620ee9d523 |
+| db42d1644d4d9bfc8e2917e3b22919c81c5b7faf | 720fc1ca4c53f0c68e0ef7ae73f74f5b4d98a3b4 |
+| 7e572a88a3439ee8887f17905356dc1ed6dc501d | e06bdb40c4d595572ff6dc64cf39d43be705a01e |
+| ca668161bdaec408f194b6ada527e2b5f7f4b444 | b1489de5698b93d10845e7d136ad930ed2868ba5 |
+| 3d45019bc1f95a4440d300f6df20737535905371 | bfd283671e2e46932f1dc87466abb642afb801e3 |
+| fc7128769e9da2921e09d005d756983bb09759dd | aa6515f8872b03d40327fc0295e4c3402caaabce |
+| 66394bbf1c0f6ded20a167ce6b646b66d35fe20e | 342a40e3b315ba77958c8382ffe68c48ef7f7e4e |
+
+The initial extracted 71-file tree was
+29ac72f1ecba63c0c1f799c59ad602755beb2ae8; signed standalone baseline
+1f064c06b5c6876deb6b2f99c156fd9409c929f9 has tree
+c56fdaf845d95ef7975c1871afaf69792c2015cc and adds the unchanged Apache-2.0
+license. AutoGov v1.4.0 remains the compatibility source; its module sum is
+h1:aj+yhS852iL8dKgTaoKh8PYVxKS2zznkfp6SxO6I6Ac=.
