@@ -759,15 +759,24 @@ func gunzipBytes(t *testing.T, p string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
 	z, err := gzip.NewReader(f)
+	if err != nil {
+		if closeErr := f.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		t.Fatal(err)
+	}
+	b, err := io.ReadAll(z)
+	closeErr := z.Close()
+	fileErr := f.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer z.Close()
-	b, err := io.ReadAll(z)
-	if err != nil {
-		t.Fatal(err)
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if fileErr != nil {
+		t.Fatal(fileErr)
 	}
 	return b
 }
