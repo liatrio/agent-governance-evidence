@@ -9,6 +9,43 @@ permissions:
   contents: read
 
 jobs:
+  draft-release-proof:
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - env:
+          GH_DEBUG: api
+          GH_TOKEN: ${{ github.token }}
+          TAG: v0.1.0-alpha.2
+        run: |
+          set -euo pipefail
+          gh --version
+          uname -a
+          owner=${GITHUB_REPOSITORY%/*}
+          name=${GITHUB_REPOSITORY#*/}
+          query="query(\$owner:String!, \$name:String!, \$tag:String!) { repository(owner:\$owner, name:\$name) { release(tagName:\$tag) { databaseId isDraft isPrerelease tagName } } }"
+          graphql_json=$(gh api graphql -f query="$query" -F owner="$owner" -F name="$name" -F tag="$TAG")
+          printf '%s\n' "$graphql_json"
+          database_id=$(python3 -c 'import json,sys; payload=json.loads(sys.argv[1]); release=payload.get("data", {}).get("repository", {}).get("release"); assert release, "graphql release(tagName) could not see the draft"; assert release.get("isDraft") and release.get("isPrerelease") and release.get("tagName")=="v0.1.0-alpha.2", "graphql release(tagName) returned the wrong release state"; print(release["databaseId"])' "$graphql_json")
+          set +e
+          by_tag_output=$(gh api -i "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" 2>&1)
+          by_tag_status=$?
+          set -e
+          printf '%s\n' "$by_tag_output"
+          if [ "$by_tag_status" -eq 0 ]; then
+            echo "expected by-tag lookup to miss the draft" >&2
+          elif ! printf '%s\n' "$by_tag_output" | grep -q '404 Not Found'; then
+            echo "by-tag lookup failed without a confirmed 404" >&2
+            exit 1
+          fi
+          by_id_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/$database_id")
+          printf '%s\n' "$by_id_json"
+          python3 -c 'import json,sys; release=json.loads(sys.argv[1]); assert release.get("draft") and release.get("prerelease") and release.get("tag_name")=="v0.1.0-alpha.2", "get by id could not confirm the draft prerelease"' "$by_id_json"
+
   go-acceptance:
     runs-on: ubuntu-24.04
     steps:
