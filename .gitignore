@@ -2,6 +2,7 @@
 /.setup-autogov.*/
 /bin/
 /coverage.out
+/release-assets/
 /adapters/agt/.venv/
 /adapters/agt/.wheels/
 **/__pycache__/
