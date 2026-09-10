@@ -412,6 +412,24 @@ func TestVerifyRejectsChecksumAndLocalAssetFailuresBeforeGH(t *testing.T) {
 	}
 }
 
+func TestVerifyRejectsSwappedNativeArtifactsBeforeExecution(t *testing.T) {
+	source, commit := gitSource(t)
+	d := assets(t, source, commit)
+	linuxPath := filepath.Join(d, native("linux-amd64"))
+	darwinPath := filepath.Join(d, native("darwin-arm64"))
+	linux := mustReadBytes(t, linuxPath)
+	darwin := mustReadBytes(t, darwinPath)
+	mustWrite(t, linuxPath, darwin, 0644)
+	mustWrite(t, darwinPath, linux, 0644)
+	m, g, x := ghMock(t)
+	out, err := verify(t, verificationEnv(m, g, x, d, commit, releaseJSON(t, d, false, true, true, testTag, nil)), verifyArgs(d, source, commit, "published")...)
+	if err == nil || !strings.Contains(out, "checksum mismatch: "+native("linux-amd64")) {
+		t.Fatalf("swapped native artifacts passed: %v\n%s", err, out)
+	}
+	assertEmpty(t, g)
+	assertEmpty(t, x)
+}
+
 func TestVerifyRejectsArchiveMutationsCausally(t *testing.T) {
 	source, commit := gitSource(t)
 	for _, tc := range []struct {
@@ -469,7 +487,7 @@ func TestVerifyRejectsArchiveMutationsCausally(t *testing.T) {
 				e = sourceEntries(t, source, commit)
 				path = filepath.Join(d, sourceName())
 			} else {
-				e = platformEntries()
+				e = platformEntries("linux-amd64")
 				path = filepath.Join(d, native("linux-amd64"))
 			}
 			writeTar(t, path, tc.mutate(t, e))
@@ -777,8 +795,8 @@ func mustRun(t *testing.T, d, n string, a ...string) {
 func assets(t *testing.T, source, commit string) string {
 	t.Helper()
 	d := t.TempDir()
-	for _, n := range []string{native("linux-amd64"), native("darwin-arm64")} {
-		writeTar(t, filepath.Join(d, n), platformEntries())
+	for _, platform := range []string{"linux-amd64", "darwin-arm64"} {
+		writeTar(t, filepath.Join(d, native(platform)), platformEntries(platform))
 	}
 	raw, err := exec.Command("git", "-C", source, "-c", "tar.umask=022", "archive", "--format=tar", "--prefix=agent-governance-evidence_"+testTag+"/", commit).Output()
 	if err != nil {
@@ -789,9 +807,9 @@ func assets(t *testing.T, source, commit string) string {
 	mustWrite(t, filepath.Join(d, "build-provenance.sigstore.json"), []byte("{}"), 0644)
 	return d
 }
-func platformEntries() []entry {
+func platformEntries(platform string) []entry {
 	script := func(n string) []byte {
-		return []byte("#!/bin/sh\nprintf '%s\\n' '" + n + ":$0' >> \"${EXEC_LOG:?}\"\n")
+		return []byte("#!/bin/sh\nprintf '%s\\n' '" + platform + ":" + n + ":$0' >> \"${EXEC_LOG:?}\"\n")
 	}
 	return []entry{{"agent-governance-evidence", script("evidence"), 0755, tar.TypeReg, ""}, {"agent-governance-demo", script("demo"), 0755, tar.TypeReg, ""}, {"checkpoint", script("checkpoint"), 0755, tar.TypeReg, ""}, {"LICENSE", []byte("license\n"), 0644, tar.TypeReg, ""}}
 }
@@ -1170,6 +1188,14 @@ func mustRead(t *testing.T, p string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+func mustReadBytes(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 func mustMkdir(t *testing.T, p string) {
 	t.Helper()
