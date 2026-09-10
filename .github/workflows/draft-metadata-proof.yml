@@ -1,0 +1,88 @@
+name: draft metadata proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prove-draft-metadata:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_PATH: /repos/liatrio/agent-governance-evidence/releases/386593269
+      EXPECTED_ID: "386593269"
+      EXPECTED_TAG: v0.1.0-alpha.2
+      EXPECTED_DRAFT: "true"
+    steps:
+      - name: print gh version
+        run: gh --version
+      - name: prove release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          response="$(mktemp)"
+          set +e
+          gh api --include "$RELEASE_PATH" >"$response"
+          rc=$?
+          set -e
+
+          cat "$response"
+
+          http_status="$(python3 - "$response" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          text = Path(sys.argv[1]).read_text()
+          for line in text.splitlines():
+              match = re.match(r"^HTTP/\S+\s+(\d{3})(?:\s|$)", line.strip())
+              if match:
+                  print(match.group(1))
+                  raise SystemExit(0)
+          raise SystemExit(1)
+          PY
+          )"
+          echo "numeric_status=$http_status"
+
+          if [ "$rc" -ne 0 ] || [ "$http_status" != "200" ]; then
+            echo "probe failed: gh api rc=$rc status=$http_status"
+            exit 1
+          fi
+
+          python3 - "$response" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          text = Path(sys.argv[1]).read_text()
+          lines = text.splitlines()
+          start = None
+          for i, line in enumerate(lines):
+              if line.strip().startswith("{"):
+                  start = i
+                  break
+          if start is None:
+              print("probe failed: missing json body")
+              raise SystemExit(1)
+
+          data = json.loads("\n".join(lines[start:]))
+          actual_id = data.get("id")
+          actual_tag = data.get("tag_name")
+          actual_draft = data.get("draft")
+
+          print(f"id={actual_id}")
+          print(f"tag_name={actual_tag}")
+          print(f"draft={actual_draft}")
+
+          if (
+              str(actual_id) != "386593269"
+              or actual_tag != "v0.1.0-alpha.2"
+              or actual_draft is not True
+          ):
+              print("probe failed: release identity mismatch")
+              raise SystemExit(1)
+          PY
