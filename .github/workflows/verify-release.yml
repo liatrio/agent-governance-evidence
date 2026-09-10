@@ -21,7 +21,47 @@ permissions:
   contents: read
 
 jobs:
+  retrieve-draft-release:
+    if: ${{ inputs.phase == 'draft' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+          architecture: x64
+      - id: retrieve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          bundle=$(mktemp -d "$RUNNER_TEMP/agent-governance-draft-release.XXXXXX")
+          mkdir "$bundle/assets"
+          {
+            printf 'bundle=%s\n' "$bundle"
+          } >> "$GITHUB_OUTPUT"
+          ./scripts/retrieve-release-draft.sh \
+            --tag "$TAG" \
+            --assets-dir "$bundle/assets" \
+            --metadata-file "$bundle/release-metadata.json" \
+            --repository "$GITHUB_REPOSITORY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: draft-release-retrieval
+          path: ${{ steps.retrieve.outputs.bundle }}/
+          if-no-files-found: error
+
   native-release-verification:
+    needs: [retrieve-draft-release]
+    if: ${{ always() && (inputs.phase != 'draft' || needs.retrieve-draft-release.result == 'success') }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -40,12 +80,46 @@ jobs:
         with:
           python-version: '3.13'
           architecture: ${{ runner.os == 'macOS' && 'arm64' || 'x64' }}
+      - id: prep
+        run: |
+          set -euo pipefail
+          root=$(mktemp -d "$RUNNER_TEMP/agent-governance-release.XXXXXX")
+          assets="$root/assets"
+          metadata="$root/release-metadata.json"
+          mkdir "$assets"
+          {
+            printf 'root=%s\n' "$root"
+            printf 'assets=%s\n' "$assets"
+            printf 'metadata=%s\n' "$metadata"
+          } >> "$GITHUB_OUTPUT"
+      - if: ${{ inputs.phase == 'draft' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: draft-release-retrieval
+          path: ${{ steps.prep.outputs.root }}
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ inputs.commit }}
+        if: ${{ inputs.phase == 'published' }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "${{ steps.prep.outputs.assets }}" --pattern '*'
       - env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
           COMMIT: ${{ inputs.commit }}
         run: |
           set -euo pipefail
-          assets=$(mktemp -d "$RUNNER_TEMP/agent-governance-release-assets.XXXXXX")
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$assets" --pattern '*'
-          ./scripts/verify-release.sh --tag "$TAG" --commit "$COMMIT" --phase "${{ inputs.phase }}" --assets-dir "$assets" --repository "$GITHUB_REPOSITORY" --source-dir "$GITHUB_WORKSPACE"
+          args=(
+            --tag "$TAG"
+            --commit "$COMMIT"
+            --phase "${{ inputs.phase }}"
+            --assets-dir "${{ steps.prep.outputs.assets }}"
+            --repository "$GITHUB_REPOSITORY"
+            --source-dir "$GITHUB_WORKSPACE"
+          )
+          if [ "${{ inputs.phase }}" = draft ]; then
+            args+=(--metadata-file "${{ steps.prep.outputs.metadata }}")
+          fi
+          ./scripts/verify-release.sh "${args[@]}"

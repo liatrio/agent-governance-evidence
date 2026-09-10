@@ -61,6 +61,11 @@ func verify(t *testing.T, e []string, args ...string) (string, error) {
 	return run(t, root(t), e, "./scripts/verify-release.sh", args...)
 }
 
+func retrieve(t *testing.T, e []string, args ...string) (string, error) {
+	t.Helper()
+	return run(t, root(t), e, "./scripts/retrieve-release-draft.sh", args...)
+}
+
 func TestPackageGuardsAndUnpackedSmoke(t *testing.T) {
 	for _, bad := range []string{"v1.0.0", "v1.2.3-alpha.1$(printf${IFS}INJECTED)", "v1.2.3-alpha.1x", "v1.2.3-alpha.-1"} {
 		out, err := run(t, root(t), nil, "./scripts/package-release.sh", "--tag", bad, "--output", filepath.Join(t.TempDir(), "out"))
@@ -273,6 +278,48 @@ func TestAggregateAndDraftWorkflowGuards(t *testing.T) {
 	}
 }
 
+func TestRetrieveDraftReleaseOnlyDownloadsAndWritesMetadata(t *testing.T) {
+	downloads := draftAssets(t)
+	outDir := filepath.Join(t.TempDir(), "out")
+	metadata := filepath.Join(t.TempDir(), "release-metadata.json")
+	mock, ghlog, execlog := retrieveMock(t)
+	env := []string{
+		"PATH=" + mock + ":" + os.Getenv("PATH"),
+		"GH_LOG=" + ghlog,
+		"EXEC_LOG=" + execlog,
+		"DOWNLOADS_DIR=" + downloads,
+		"RELEASE_JSON=" + releaseJSON(t, downloads, true, true, false, testTag, nil),
+	}
+	out, err := retrieve(t, env, "--tag", testTag, "--assets-dir", outDir, "--metadata-file", metadata, "--repository", "liatrio/agent-governance-evidence")
+	if err != nil {
+		t.Fatalf("retrieve failed: %v\n%s", err, out)
+	}
+	if got := mustRead(t, execlog); got != "" {
+		t.Fatalf("retrieve executed packaged tools:\n%s", got)
+	}
+	body := mustRead(t, ghlog)
+	if strings.Count(body, "release view "+testTag+" -R liatrio/agent-governance-evidence --json databaseId,tagName,isDraft,isPrerelease,assets") != 1 {
+		t.Fatalf("release view missing:\n%s", body)
+	}
+	if strings.Count(body, "release download "+testTag+" --repo liatrio/agent-governance-evidence --dir "+outDir+" --pattern *") != 1 {
+		t.Fatalf("release download missing:\n%s", body)
+	}
+	if strings.Contains(body, "release edit ") || strings.Contains(body, "release create ") {
+		t.Fatalf("retrieve attempted publication:\n%s", body)
+	}
+	for _, name := range names() {
+		if mustRead(t, filepath.Join(outDir, name)) != name {
+			t.Fatalf("download mismatch for %s", name)
+		}
+	}
+	manifest := mustRead(t, metadata)
+	for _, want := range []string{`"draft": true`, `"prerelease": true`, `"tag": "` + testTag + `"`, `"release_id": 123`} {
+		if !strings.Contains(manifest, want) {
+			t.Fatalf("metadata missing %q:\n%s", want, manifest)
+		}
+	}
+}
+
 func TestAcceptanceEnvironmentAndWorkflowLayout(t *testing.T) {
 	for _, tc := range []struct{ script, kernel, arch, msg string }{{"scripts/ci.sh", "Linux", "x86_64", "ci.sh requires Python 3.13"}, {"scripts/regenerate-producers.sh", "Darwin", "arm64", "producer regeneration requires Python 3.13"}} {
 		t.Run(filepath.Base(tc.script), func(t *testing.T) {
@@ -306,7 +353,16 @@ func TestAcceptanceEnvironmentAndWorkflowLayout(t *testing.T) {
 		})
 	}
 	body := mustRead(t, filepath.Join(root(t), ".github/workflows/verify-release.yml"))
-	for _, s := range []string{`assets=$(mktemp -d "$RUNNER_TEMP/agent-governance-release-assets.XXXXXX")`, `--assets-dir "$assets"`, `--source-dir "$GITHUB_WORKSPACE"`} {
+	for _, s := range []string{
+		"retrieve-draft-release:",
+		"contents: write",
+		"name: draft-release-retrieval",
+		"inputs.phase == 'draft'",
+		"inputs.phase == 'published'",
+		"--metadata-file",
+		"--source-dir \"$GITHUB_WORKSPACE\"",
+		"gh release download \"$TAG\" --repo \"$GITHUB_REPOSITORY\" --dir \"${{ steps.prep.outputs.assets }}\" --pattern '*'",
+	} {
 		if !strings.Contains(body, s) {
 			t.Fatalf("workflow lacks clean asset arrangement %q", s)
 		}
@@ -354,6 +410,24 @@ func TestVerifyRejectsChecksumAndLocalAssetFailuresBeforeGH(t *testing.T) {
 			assertEmpty(t, log)
 		})
 	}
+}
+
+func TestVerifyRejectsSwappedNativeArtifactsBeforeExecution(t *testing.T) {
+	source, commit := gitSource(t)
+	d := assets(t, source, commit)
+	linuxPath := filepath.Join(d, native("linux-amd64"))
+	darwinPath := filepath.Join(d, native("darwin-arm64"))
+	linux := mustReadBytes(t, linuxPath)
+	darwin := mustReadBytes(t, darwinPath)
+	mustWrite(t, linuxPath, darwin, 0644)
+	mustWrite(t, darwinPath, linux, 0644)
+	m, g, x := ghMock(t)
+	out, err := verify(t, verificationEnv(m, g, x, d, commit, releaseJSON(t, d, false, true, true, testTag, nil)), verifyArgs(d, source, commit, "published")...)
+	if err == nil || !strings.Contains(out, "checksum mismatch: "+native("linux-amd64")) {
+		t.Fatalf("swapped native artifacts passed: %v\n%s", err, out)
+	}
+	assertEmpty(t, g)
+	assertEmpty(t, x)
 }
 
 func TestVerifyRejectsArchiveMutationsCausally(t *testing.T) {
@@ -413,7 +487,7 @@ func TestVerifyRejectsArchiveMutationsCausally(t *testing.T) {
 				e = sourceEntries(t, source, commit)
 				path = filepath.Join(d, sourceName())
 			} else {
-				e = platformEntries()
+				e = platformEntries("linux-amd64")
 				path = filepath.Join(d, native("linux-amd64"))
 			}
 			writeTar(t, path, tc.mutate(t, e))
@@ -451,23 +525,29 @@ func TestVerifyRejectsDirtyAndMismatchedSource(t *testing.T) {
 func TestVerifyExactAttestationsDraftAndPublishedProofs(t *testing.T) {
 	source, commit := gitSource(t)
 	d := assets(t, source, commit)
+	metadata := filepath.Join(t.TempDir(), "release-metadata.json")
+	mustWrite(t, metadata, []byte(draftMetadataJSON(t, d, true, true, testTag, nil)), 0644)
 	mock, ghlog, execlog := ghMock(t)
 	release := releaseJSON(t, d, true, true, false, testTag, nil)
 	e := verificationEnv(mock, ghlog, execlog, d, commit, release)
-	out, err := verify(t, e, verifyArgs(d, source, commit, "draft")...)
+	out, err := verify(t, e, append(verifyArgs(d, source, commit, "draft"), "--metadata-file", metadata)...)
 	if err != nil {
 		t.Fatalf("valid draft failed: %v\n%s", err, out)
 	}
 	body := mustRead(t, ghlog)
 	assertExactAttestations(t, body, d)
-	if strings.Contains(body, "release verify ") {
-		t.Fatalf("draft requested immutable proof:\n%s", body)
+	for _, forbidden := range []string{"release view ", "release verify ", "api repos/liatrio/agent-governance-evidence/git/"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("draft called forbidden metadata path %q:\n%s", forbidden, body)
+		}
 	}
 	t.Run("attestation-failure", func(t *testing.T) {
 		d := assets(t, source, commit)
+		metadata := filepath.Join(t.TempDir(), "release-metadata.json")
+		mustWrite(t, metadata, []byte(draftMetadataJSON(t, d, true, true, testTag, nil)), 0644)
 		m, g, x := ghMock(t)
 		e := append(verificationEnv(m, g, x, d, commit, releaseJSON(t, d, true, true, false, testTag, nil)), "GH_FAIL=attestation")
-		out, err := verify(t, e, verifyArgs(d, source, commit, "draft")...)
+		out, err := verify(t, e, append(verifyArgs(d, source, commit, "draft"), "--metadata-file", metadata)...)
 		if err == nil || !strings.Contains(out, "attestation failure") {
 			t.Fatalf("attestation failure passed: %v\n%s", err, out)
 		}
@@ -555,35 +635,85 @@ func TestAttestationOracleRejectsEveryWrongBinding(t *testing.T) {
 	}
 }
 
-func TestVerifyReleaseMetadataFailuresBlockExecution(t *testing.T) {
+func TestVerifyDraftMetadataFailuresBlockExecution(t *testing.T) {
 	source, commit := gitSource(t)
 	for _, tc := range []struct {
-		name, phase, want, mockCommit string
-		makeJSON                      func(*testing.T, string) string
+		name, want string
+		body       func(*testing.T, string) string
 	}{
-		{"duplicate", "draft", "missing or duplicate", commit, func(t *testing.T, d string) string {
-			return releaseJSON(t, d, true, true, false, testTag, []map[string]string{{"name": "SHA256SUMS"}, {"name": "SHA256SUMS"}, {"name": "a"}, {"name": "b"}, {"name": "c"}, {"name": "d"}})
+		{"duplicate", "missing or duplicate", func(t *testing.T, d string) string {
+			return draftMetadataJSON(t, d, true, true, testTag, []map[string]string{{"name": "SHA256SUMS", "digest": "sha256:" + strings.Repeat("0", 64)}, {"name": "SHA256SUMS", "digest": "sha256:" + strings.Repeat("1", 64)}, {"name": "a", "digest": "sha256:" + strings.Repeat("2", 64)}, {"name": "b", "digest": "sha256:" + strings.Repeat("3", 64)}, {"name": "c", "digest": "sha256:" + strings.Repeat("4", 64)}})
 		}},
-		{"missing", "draft", "missing or duplicate", commit, func(t *testing.T, d string) string {
+		{"missing", "missing or duplicate", func(t *testing.T, d string) string {
 			x := remote(t, d)
-			return releaseJSON(t, d, true, true, false, testTag, x[:4])
+			return draftMetadataJSON(t, d, true, true, testTag, x[:4])
 		}},
-		{"extra", "draft", "names or digests mismatch", commit, func(t *testing.T, d string) string {
+		{"extra", "names or digests mismatch", func(t *testing.T, d string) string {
 			x := remote(t, d)
 			x[4]["name"] = "extra"
-			return releaseJSON(t, d, true, true, false, testTag, x)
+			return draftMetadataJSON(t, d, true, true, testTag, x)
 		}},
-		{"bad-digest", "draft", "names or digests mismatch", commit, func(t *testing.T, d string) string {
+		{"bad-digest", "names or digests mismatch", func(t *testing.T, d string) string {
 			x := remote(t, d)
 			x[0]["digest"] = "sha256:" + strings.Repeat("0", 64)
-			return releaseJSON(t, d, true, true, false, testTag, x)
+			return draftMetadataJSON(t, d, true, true, testTag, x)
 		}},
-		{"wrong-tag", "draft", "release identity", commit, func(t *testing.T, d string) string {
-			return releaseJSON(t, d, true, true, false, "v9.9.9-alpha.9", nil)
+		{"wrong-tag", "unexpected release state", func(t *testing.T, d string) string {
+			return draftMetadataJSON(t, d, true, true, "v9.9.9-alpha.9", nil)
 		}},
-		{"moved-tag", "draft", "release identity", strings.Repeat("0", 40), func(t *testing.T, d string) string { return releaseJSON(t, d, true, true, false, testTag, nil) }},
-		{"not-prerelease", "draft", "unexpected release state", commit, func(t *testing.T, d string) string { return releaseJSON(t, d, true, false, false, testTag, nil) }},
-		{"not-immutable", "published", "not immutable", commit, func(t *testing.T, d string) string { return releaseJSON(t, d, false, true, false, testTag, nil) }},
+		{"not-draft", "unexpected release state", func(t *testing.T, d string) string {
+			return draftMetadataJSON(t, d, false, true, testTag, nil)
+		}},
+		{"not-prerelease", "unexpected release state", func(t *testing.T, d string) string {
+			return draftMetadataJSON(t, d, true, false, testTag, nil)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := assets(t, source, commit)
+			metadata := filepath.Join(t.TempDir(), "release-metadata.json")
+			mustWrite(t, metadata, []byte(tc.body(t, d)), 0644)
+			m, g, x := ghMock(t)
+			out, err := verify(t, verificationEnv(m, g, x, d, commit, ""), append(verifyArgs(d, source, commit, "draft"), "--metadata-file", metadata)...)
+			if err == nil || !strings.Contains(out, tc.want) {
+				t.Fatalf("metadata failure passed: %v\n%s", err, out)
+			}
+			if strings.Contains(mustRead(t, g), "release view ") || strings.Contains(mustRead(t, g), "api repos/liatrio/agent-governance-evidence/git/") {
+				t.Fatalf("draft metadata failure queried github metadata:\n%s", mustRead(t, g))
+			}
+			assertEmpty(t, x)
+		})
+	}
+}
+
+func TestVerifyPublishedReleaseMetadataFailuresBlockExecution(t *testing.T) {
+	source, commit := gitSource(t)
+	for _, tc := range []struct {
+		name, want, mockCommit string
+		makeJSON               func(*testing.T, string) string
+	}{
+		{"duplicate", "missing or duplicate", commit, func(t *testing.T, d string) string {
+			return releaseJSON(t, d, false, true, true, testTag, []map[string]string{{"name": "SHA256SUMS"}, {"name": "SHA256SUMS"}, {"name": "a"}, {"name": "b"}, {"name": "c"}, {"name": "d"}})
+		}},
+		{"missing", "missing or duplicate", commit, func(t *testing.T, d string) string {
+			x := remote(t, d)
+			return releaseJSON(t, d, false, true, true, testTag, x[:4])
+		}},
+		{"extra", "names or digests mismatch", commit, func(t *testing.T, d string) string {
+			x := remote(t, d)
+			x[4]["name"] = "extra"
+			return releaseJSON(t, d, false, true, true, testTag, x)
+		}},
+		{"bad-digest", "names or digests mismatch", commit, func(t *testing.T, d string) string {
+			x := remote(t, d)
+			x[0]["digest"] = "sha256:" + strings.Repeat("0", 64)
+			return releaseJSON(t, d, false, true, true, testTag, x)
+		}},
+		{"wrong-tag", "release identity", commit, func(t *testing.T, d string) string {
+			return releaseJSON(t, d, false, true, true, "v9.9.9-alpha.9", nil)
+		}},
+		{"moved-tag", "release identity", strings.Repeat("0", 40), func(t *testing.T, d string) string { return releaseJSON(t, d, false, true, true, testTag, nil) }},
+		{"not-prerelease", "unexpected release state", commit, func(t *testing.T, d string) string { return releaseJSON(t, d, false, false, true, testTag, nil) }},
+		{"not-immutable", "not immutable", commit, func(t *testing.T, d string) string { return releaseJSON(t, d, false, true, false, testTag, nil) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := assets(t, source, commit)
@@ -592,7 +722,7 @@ func TestVerifyReleaseMetadataFailuresBlockExecution(t *testing.T) {
 			if tc.name == "moved-tag" {
 				e = append(e, "PEELED_COMMIT="+tc.mockCommit)
 			}
-			out, err := verify(t, e, verifyArgs(d, source, commit, tc.phase)...)
+			out, err := verify(t, e, verifyArgs(d, source, commit, "published")...)
 			if err == nil || !strings.Contains(out, tc.want) {
 				t.Fatalf("metadata failure passed: %v\n%s", err, out)
 			}
@@ -665,8 +795,8 @@ func mustRun(t *testing.T, d, n string, a ...string) {
 func assets(t *testing.T, source, commit string) string {
 	t.Helper()
 	d := t.TempDir()
-	for _, n := range []string{native("linux-amd64"), native("darwin-arm64")} {
-		writeTar(t, filepath.Join(d, n), platformEntries())
+	for _, platform := range []string{"linux-amd64", "darwin-arm64"} {
+		writeTar(t, filepath.Join(d, native(platform)), platformEntries(platform))
 	}
 	raw, err := exec.Command("git", "-C", source, "-c", "tar.umask=022", "archive", "--format=tar", "--prefix=agent-governance-evidence_"+testTag+"/", commit).Output()
 	if err != nil {
@@ -677,9 +807,9 @@ func assets(t *testing.T, source, commit string) string {
 	mustWrite(t, filepath.Join(d, "build-provenance.sigstore.json"), []byte("{}"), 0644)
 	return d
 }
-func platformEntries() []entry {
+func platformEntries(platform string) []entry {
 	script := func(n string) []byte {
-		return []byte("#!/bin/sh\nprintf '%s\\n' '" + n + ":$0' >> \"${EXEC_LOG:?}\"\n")
+		return []byte("#!/bin/sh\nprintf '%s\\n' '" + platform + ":" + n + ":$0' >> \"${EXEC_LOG:?}\"\n")
 	}
 	return []entry{{"agent-governance-evidence", script("evidence"), 0755, tar.TypeReg, ""}, {"agent-governance-demo", script("demo"), 0755, tar.TypeReg, ""}, {"checkpoint", script("checkpoint"), 0755, tar.TypeReg, ""}, {"LICENSE", []byte("license\n"), 0644, tar.TypeReg, ""}}
 }
@@ -873,7 +1003,19 @@ func releaseJSON(t *testing.T, d string, draft, pre, immutable bool, releaseTag 
 	if override == nil {
 		override = remote(t, d)
 	}
-	b, err := json.Marshal(map[string]any{"tagName": releaseTag, "isDraft": draft, "isPrerelease": pre, "isImmutable": immutable, "assets": override})
+	b, err := json.Marshal(map[string]any{"databaseId": 123, "tagName": releaseTag, "isDraft": draft, "isPrerelease": pre, "isImmutable": immutable, "assets": override})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func draftMetadataJSON(t *testing.T, d string, draft, pre bool, releaseTag string, override []map[string]string) string {
+	t.Helper()
+	if override == nil {
+		override = remote(t, d)
+	}
+	b, err := json.Marshal(map[string]any{"release_id": 123, "tag": releaseTag, "draft": draft, "prerelease": pre, "assets": override})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -977,6 +1119,39 @@ esac
 	return bin, log
 }
 
+func retrieveMock(t *testing.T) (string, string, string) {
+	t.Helper()
+	bin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "gh.log")
+	execLog := filepath.Join(t.TempDir(), "exec.log")
+	truncate(t, log)
+	truncate(t, execLog)
+	script := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$GH_LOG"
+case "$1 $2" in
+"release view") printf '%s' "$RELEASE_JSON";;
+"release download")
+ dir=
+ while [ "$#" -gt 0 ]; do
+  case "$1" in
+   --dir) dir=$2; shift 2;;
+   *) shift;;
+  esac
+ done
+ test -n "$dir"
+ mkdir -p "$dir"
+ cp "$DOWNLOADS_DIR"/* "$dir"/;;
+*) exit 99;;
+esac
+`
+	mustWrite(t, filepath.Join(bin, "gh"), []byte(script), 0755)
+	for _, name := range []string{"tar", "checkpoint", "agent-governance-demo", "agent-governance-evidence"} {
+		mustWrite(t, filepath.Join(bin, name), []byte("#!/bin/sh\nprintf '%s\\n' \"$0 $*\" >> \"$EXEC_LOG\"\nexit 1\n"), 0755)
+	}
+	return bin, log, execLog
+}
+
 func packageRepo(t *testing.T) (string, string) {
 	t.Helper()
 	d := t.TempDir()
@@ -1013,6 +1188,14 @@ func mustRead(t *testing.T, p string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+func mustReadBytes(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 func mustMkdir(t *testing.T, p string) {
 	t.Helper()
