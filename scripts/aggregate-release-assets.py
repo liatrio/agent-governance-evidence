@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import os
 import re
@@ -32,6 +33,14 @@ def exact_directory(path: Path, expected: set[str]) -> dict[str, Path]:
     return result
 
 
+def ungzip(path: Path) -> bytes:
+    try:
+        with gzip.open(path, "rb") as handle:
+            return handle.read()
+    except OSError as error:
+        fail(f"invalid source archive: {error}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", required=True)
@@ -54,7 +63,7 @@ def main() -> None:
     darwin_name = f"agent-governance-evidence_{args.tag}_darwin-arm64.tar.gz"
     linux = exact_directory(args.incoming / "linux-amd64", {linux_name, source_name})
     darwin = exact_directory(args.incoming / "darwin-arm64", {darwin_name, source_name})
-    if linux[source_name].read_bytes() != darwin[source_name].read_bytes():
+    if ungzip(linux[source_name]) != ungzip(darwin[source_name]):
         fail("native builds produced different source archives")
     parent = args.output.parent.resolve(strict=True)
     output = parent / args.output.name

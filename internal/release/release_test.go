@@ -179,6 +179,16 @@ func TestAggregateAndDraftWorkflowGuards(t *testing.T) {
 			t.Fatalf("got %d aggregate files", len(entries))
 		}
 	})
+	t.Run("aggregate-valid-recompressed-source", func(t *testing.T) {
+		incoming := incoming(t)
+		output := filepath.Join(t.TempDir(), "out")
+		body := gunzipBytes(t, filepath.Join(incoming, "linux-amd64", sourceName()))
+		writeGzipNamed(t, filepath.Join(incoming, "darwin-arm64", sourceName()), body, "darwin")
+		out, err := run(t, root(t), nil, "./scripts/aggregate-release-assets.py", "--tag", testTag, "--incoming", incoming, "--output", output)
+		if err != nil {
+			t.Fatalf("aggregate rejected matching source payloads: %v\n%s", err, out)
+		}
+	})
 	for _, tc := range []struct {
 		name, want string
 		mutate     func(*testing.T, string, string)
@@ -195,7 +205,7 @@ func TestAggregateAndDraftWorkflowGuards(t *testing.T) {
 			}
 		}},
 		{"source-drift", "different source archives", func(t *testing.T, d, o string) {
-			mustWrite(t, filepath.Join(d, "darwin-arm64", sourceName()), []byte("bad"), 0644)
+			writeGzip(t, filepath.Join(d, "darwin-arm64", sourceName()), []byte("bad"))
 		}},
 		{"existing-output", "refusing existing aggregate output", func(t *testing.T, d, o string) { mustMkdir(t, o) }},
 		{"dangling-output", "refusing existing aggregate output", func(t *testing.T, d, o string) {
@@ -725,6 +735,51 @@ func writeGzip(t *testing.T, p string, b []byte) {
 		t.Fatal(err)
 	}
 }
+func writeGzipNamed(t *testing.T, p string, b []byte, name string) {
+	t.Helper()
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z := gzip.NewWriter(f)
+	z.Name = name
+	if _, err := z.Write(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+func gunzipBytes(t *testing.T, p string) []byte {
+	t.Helper()
+	f, err := os.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z, err := gzip.NewReader(f)
+	if err != nil {
+		if closeErr := f.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		t.Fatal(err)
+	}
+	b, err := io.ReadAll(z)
+	closeErr := z.Close()
+	fileErr := f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if fileErr != nil {
+		t.Fatal(fileErr)
+	}
+	return b
+}
 func sourceEntries(t *testing.T, s, c string) []entry {
 	t.Helper()
 	raw, err := exec.Command("git", "-C", s, "-c", "tar.umask=022", "archive", "--format=tar", "--prefix=agent-governance-evidence_"+testTag+"/", c).Output()
@@ -882,7 +937,7 @@ func incoming(t *testing.T) string {
 	for _, p := range []string{"linux-amd64", "darwin-arm64"} {
 		mustMkdir(t, filepath.Join(d, p))
 		mustWrite(t, filepath.Join(d, p, native(p)), []byte(p), 0644)
-		mustWrite(t, filepath.Join(d, p, sourceName()), []byte("source"), 0644)
+		writeGzip(t, filepath.Join(d, p, sourceName()), []byte("source"))
 	}
 	return d
 }
