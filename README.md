@@ -3,7 +3,7 @@
 An experimental standalone companion intended for public distribution,
 authoring, and demonstration of agent-deployment governance evidence. It
 provides no production assurance and is not a production policy promotion.
-AutoGov remains the generic Sigstore
+[AutoGov](https://github.com/liatrio/autogov) remains the generic Sigstore
 verification, OPA admission, and VSA engine; this companion owns the v0.1
 agent model, schema, producer fixtures, authoring CLI, and opt-in policy.
 
