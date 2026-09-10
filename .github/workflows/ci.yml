@@ -20,31 +20,41 @@ jobs:
       - env:
           GH_DEBUG: api
           GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: '386593269'
           TAG: v0.1.0-alpha.2
         run: |
           set -euo pipefail
           gh --version
-          uname -a
-          owner=${GITHUB_REPOSITORY%/*}
-          name=${GITHUB_REPOSITORY#*/}
-          query="query(\$owner:String!, \$name:String!, \$tag:String!) { repository(owner:\$owner, name:\$name) { release(tagName:\$tag) { databaseId isDraft isPrerelease tagName } } }"
-          graphql_json=$(gh api graphql -f query="$query" -F owner="$owner" -F name="$name" -F tag="$TAG")
-          printf '%s\n' "$graphql_json"
-          database_id=$(python3 -c 'import json,sys; payload=json.loads(sys.argv[1]); release=payload.get("data", {}).get("repository", {}).get("release"); assert release, "graphql release(tagName) could not see the draft"; assert release.get("isDraft") and release.get("isPrerelease") and release.get("tagName")=="v0.1.0-alpha.2", "graphql release(tagName) returned the wrong release state"; print(release["databaseId"])' "$graphql_json")
-          set +e
-          by_tag_output=$(gh api -i "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" 2>&1)
-          by_tag_status=$?
-          set -e
-          printf '%s\n' "$by_tag_output"
-          if [ "$by_tag_status" -eq 0 ]; then
-            echo "expected by-tag lookup to miss the draft" >&2
-          elif ! printf '%s\n' "$by_tag_output" | grep -q '404 Not Found'; then
-            echo "by-tag lookup failed without a confirmed 404" >&2
-            exit 1
-          fi
-          by_id_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/$database_id")
-          printf '%s\n' "$by_id_json"
-          python3 -c 'import json,sys; release=json.loads(sys.argv[1]); assert release.get("draft") and release.get("prerelease") and release.get("tag_name")=="v0.1.0-alpha.2", "get by id could not confirm the draft prerelease"' "$by_id_json"
+          response=$(gh api -i "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")
+          printf '%s\n' "$response"
+          RESPONSE="$response" python3 - <<'PY'
+            import json
+            import os
+
+            response = os.environ["RESPONSE"]
+            head, sep, body = response.partition("\r\n\r\n")
+            if not sep:
+                head, sep, body = response.partition("\n\n")
+            if not sep:
+                raise SystemExit("missing HTTP headers in gh api response")
+            status = head.splitlines()[0].strip()
+            if status != "HTTP/2.0 200 OK":
+                raise SystemExit(f"unexpected HTTP status: {status}")
+            release = json.loads(body)
+            if release.get("id") != 386593269:
+                raise SystemExit(f"unexpected release id: {release.get('id')}")
+            if release.get("tag_name") != "v0.1.0-alpha.2":
+                raise SystemExit(f"unexpected tag_name: {release.get('tag_name')}")
+            if release.get("draft") is not True:
+                raise SystemExit(f"unexpected draft state: {release.get('draft')}")
+            print(json.dumps({
+                "id": release.get("id"),
+                "tag_name": release.get("tag_name"),
+                "draft": release.get("draft"),
+                "prerelease": release.get("prerelease"),
+                "immutable": release.get("immutable"),
+            }, sort_keys=True))
+          PY
 
   go-acceptance:
     runs-on: ubuntu-24.04
