@@ -1,6 +1,6 @@
 # Releasing
 
-Only Ian Hundere coordinates a release. Before tagging, record green hosted
+Only Ian Hundere cuts releases. Before tagging, record green hosted
 acceptance checks for the exact merged main SHA, then read back private
 vulnerability reporting, immutable releases, and no-force/no-delete main
 protection. Establish and read back two active destination tag rulesets for
@@ -31,7 +31,7 @@ downloads the five assets, then the native verifier jobs run with
 `contents: read` only against that artifact handoff. Check that the workflow
 revision/run commit and both native jobs match `$commit`. Re-read
 immutable-release enablement, both tag rulesets, and the tag's peeled commit
-immediately before the coordinator explicitly publishes. No draft, source
+immediately before publication. No draft, source
 asset, or tag is overwritten: a collision or defect requires a new prerelease.
 
 ```bash
