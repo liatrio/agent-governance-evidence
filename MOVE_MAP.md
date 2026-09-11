@@ -110,3 +110,17 @@ The initial extracted 71-file tree was
 c56fdaf845d95ef7975c1871afaf69792c2015cc and adds the unchanged Apache-2.0
 license. AutoGov v1.4.0 remains the compatibility source; its module sum is
 h1:aj+yhS852iL8dKgTaoKh8PYVxKS2zznkfp6SxO6I6Ac=.
+
+## Forward source cutover
+
+The forward source removal is proposed in
+[liatrio/autogov#386](https://github.com/liatrio/autogov/pull/386) from commit
+`88fb62cd15df598198de032d11aeb4e31acb093a`. That PR removes the tracked
+`agent-governance/**` subtree from current AutoGov `main` while preserving the
+generic verification, security, and VSA behavior that shipped in PR #379.
+
+Historical AutoGov tags, releases, and preserved source history still contain
+the old bundled tree. New work on this experiment belongs here in
+`liatrio/agent-governance-evidence`, and any future correction to release-facing
+claims ships by normal forward PR or new prerelease rather than mutating old
+release history.
