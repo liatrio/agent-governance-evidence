@@ -53,6 +53,9 @@ as draft verification succeeds, record the verified live snapshot in the
 detached worktree from fresh maintainer API reads:
 
 ```bash
+set -euo pipefail
+: "${tag:?set tag first}"
+: "${commit:?set commit first}"
 repo=liatrio/agent-governance-evidence
 create_ruleset_id=22820108
 mutate_ruleset_id=22820110
@@ -192,6 +195,9 @@ recorded files. Immediately before publish, create fresh temp snapshots with
 the same API reads and normalization; do not reuse or copy the recorded files:
 
 ```bash
+set -euo pipefail
+: "${tag:?set tag first}"
+: "${commit:?set commit first}"
 repo=liatrio/agent-governance-evidence
 create_ruleset_id=22820108
 mutate_ruleset_id=22820110
