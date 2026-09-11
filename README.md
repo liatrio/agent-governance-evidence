@@ -6,6 +6,10 @@ provides no production assurance and is not a production policy promotion.
 [AutoGov](https://github.com/liatrio/autogov) remains the generic Sigstore
 verification, OPA admission, and VSA engine; this companion owns the v0.1
 agent model, schema, producer fixtures, authoring CLI, and opt-in policy.
+This repository is now the canonical home of that experiment. AutoGov's
+historical bundled copy remains in preserved source history and releases, but
+current cutover happens only through forward PRs that remove the source-local
+tree without mutating existing tags, releases, or history.
 
 ## standalone setup
 
