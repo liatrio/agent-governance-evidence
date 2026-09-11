@@ -2,7 +2,7 @@
 
 Please report a security issue privately to Ian Hundere through
 https://github.com/liatrio/agent-governance-evidence/security/advisories/new.
-Before the first publication, the coordinator must enable and read back that
+Before the first publication, the maintainer must enable and read back that
 GitHub private-reporting control; this URL is the intended route, not a claim
 that the control is enabled today. Do not include secrets, credentials, or
 exploit details in public issues.
