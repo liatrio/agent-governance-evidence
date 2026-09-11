@@ -48,7 +48,132 @@ authority or credentials; their steps use that job's own default read-only
 `GITHUB_TOKEN` while consuming the assets plus metadata artifact. Those jobs
 still execute downloaded binaries in a credential-bearing environment, so the
 retriever boundary narrows exposure but does not remove it. Check that the
-workflow revision, run commit, and both native jobs match `$commit`.
+workflow revision, run commit, and both native jobs match `$commit`. As soon
+as draft verification succeeds, record the verified live snapshot in the
+detached worktree from fresh maintainer API reads:
+
+```bash
+repo=liatrio/agent-governance-evidence
+create_ruleset_id=22820108
+mutate_ruleset_id=22820110
+test "$(git rev-parse HEAD)" = "$commit"
+worktree_root=$(git rev-parse --show-toplevel)
+release_snapshot_dir="$worktree_root/.release-verify/$tag"
+umask 077
+mkdir -p "$release_snapshot_dir"
+recorded_release_snapshot="$release_snapshot_dir/release-snapshot.json"
+recorded_rulesets_snapshot="$release_snapshot_dir/tag-rulesets-snapshot.json"
+
+release_id=$(gh api --paginate "repos/$repo/releases?per_page=100" --jq '.[] | select(.tag_name=="'"$tag"'") | .id')
+test -n "$release_id"
+test "$(printf '%s\n' "$release_id" | wc -l | tr -d ' ')" = 1
+tag_object=$(gh api "repos/$repo/git/ref/tags/$tag" --jq .object.sha)
+peeled_commit=$(gh api "repos/$repo/git/tags/$tag_object" --jq .object.sha)
+gh api "repos/$repo/releases/$release_id" > "$release_snapshot_dir/release-api.json"
+gh api "repos/$repo/immutable-releases" > "$release_snapshot_dir/immutable-releases.json"
+gh api "repos/$repo/rulesets/$create_ruleset_id" > "$release_snapshot_dir/ruleset-$create_ruleset_id.json"
+gh api "repos/$repo/rulesets/$mutate_ruleset_id" > "$release_snapshot_dir/ruleset-$mutate_ruleset_id.json"
+
+python3 - "$tag" "$peeled_commit" \
+  "$release_snapshot_dir/release-api.json" \
+  "$release_snapshot_dir/immutable-releases.json" \
+  "$recorded_release_snapshot" <<'PY'
+import json
+import sys
+
+tag, peeled_commit, release_path, immutable_path, out_path = sys.argv[1:]
+with open(release_path, encoding="utf-8") as handle:
+    release = json.load(handle)
+with open(immutable_path, encoding="utf-8") as handle:
+    immutable = json.load(handle)
+assets = [
+    {"name": asset["name"], "digest": asset["digest"]}
+    for asset in sorted(release.get("assets", []), key=lambda item: item["name"])
+]
+expected_names = sorted([
+    f"agent-governance-evidence_{tag}_darwin-arm64.tar.gz",
+    f"agent-governance-evidence_{tag}_linux-amd64.tar.gz",
+    f"agent-governance-evidence_{tag}_source.tar.gz",
+    "SHA256SUMS",
+    "build-provenance.sigstore.json",
+])
+if release.get("tag_name") != tag or not release.get("draft") or not release.get("prerelease"):
+    raise SystemExit("unexpected draft release identity or state")
+if [asset["name"] for asset in assets] != expected_names:
+    raise SystemExit("unexpected draft release assets")
+if len(assets) != 5 or any(not str(asset["digest"]).startswith("sha256:") for asset in assets):
+    raise SystemExit("unexpected draft release digests")
+with open(out_path, "w", encoding="utf-8") as handle:
+    json.dump(
+        {
+            "release_id": release["id"],
+            "tag": release["tag_name"],
+            "draft": release["draft"],
+            "prerelease": release["prerelease"],
+            "assets": assets,
+            "peeled_commit": peeled_commit,
+            "immutable_enabled": immutable["enabled"],
+            "immutable_enforced_by_owner": immutable["enforced_by_owner"],
+        },
+        handle,
+        indent=2,
+        sort_keys=True,
+    )
+    handle.write("\n")
+PY
+
+python3 - "$create_ruleset_id" "$mutate_ruleset_id" \
+  "$release_snapshot_dir/ruleset-$create_ruleset_id.json" \
+  "$release_snapshot_dir/ruleset-$mutate_ruleset_id.json" \
+  "$recorded_rulesets_snapshot" <<'PY'
+import json
+import sys
+
+create_id, mutate_id, create_path, mutate_path, out_path = sys.argv[1:]
+expected_ids = [int(create_id), int(mutate_id)]
+
+def normalize(path):
+    with open(path, encoding="utf-8") as handle:
+        ruleset = json.load(handle)
+    ref_name = ruleset.get("conditions", {}).get("ref_name", {})
+    return {
+        "id": ruleset["id"],
+        "name": ruleset["name"],
+        "target": ruleset["target"],
+        "enforcement": ruleset["enforcement"],
+        "conditions": {
+            "ref_name": {
+                "include": sorted(ref_name.get("include", [])),
+                "exclude": sorted(ref_name.get("exclude", [])),
+            }
+        },
+        "bypass_actors": sorted(
+            [
+                {
+                    "actor_id": actor["actor_id"],
+                    "actor_type": actor["actor_type"],
+                    "bypass_mode": actor["bypass_mode"],
+                }
+                for actor in ruleset.get("bypass_actors", [])
+            ],
+            key=lambda actor: (actor["actor_type"], actor["actor_id"], actor["bypass_mode"]),
+        ),
+        "rules": sorted(ruleset.get("rules", []), key=lambda rule: json.dumps(rule, sort_keys=True)),
+    }
+
+rulesets = sorted([normalize(create_path), normalize(mutate_path)], key=lambda item: item["id"])
+if [ruleset["id"] for ruleset in rulesets] != expected_ids:
+    raise SystemExit("unexpected tag ruleset ids")
+for ruleset in rulesets:
+    if ruleset["target"] != "tag" or ruleset["enforcement"] != "active":
+        raise SystemExit("unexpected tag ruleset target or enforcement")
+    if ruleset["conditions"]["ref_name"] != {"include": ["refs/tags/v*"], "exclude": []}:
+        raise SystemExit("unexpected tag ruleset ref condition")
+with open(out_path, "w", encoding="utf-8") as handle:
+    json.dump(rulesets, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PY
+```
 
 Immediately before publication, re-read the live release and compare it
 against the verified snapshot: release identity/state, these exact five asset
@@ -62,31 +187,149 @@ and both `refs/tags/v*` rulesets.
 - `build-provenance.sigstore.json`
 
 Any mismatch stops publication. Record the verified snapshots, then publish
-only through a fail-closed gate that compares the immediately re-read live
-release and tag-ruleset snapshots against those recorded files:
+only through a fail-closed gate that compares new live reads against those
+recorded files. Immediately before publish, create fresh temp snapshots with
+the same API reads and normalization; do not reuse or copy the recorded files:
 
 ```bash
 repo=liatrio/agent-governance-evidence
-verified_release_snapshot=/path/to/verified-release-snapshot.json
-verified_rulesets_snapshot=/path/to/verified-tag-rulesets-snapshot.json
-live_release_snapshot=/path/to/live-release-snapshot.json
-live_rulesets_snapshot=/path/to/live-tag-rulesets-snapshot.json
+create_ruleset_id=22820108
+mutate_ruleset_id=22820110
+test "$(git rev-parse HEAD)" = "$commit"
+worktree_root=$(git rev-parse --show-toplevel)
+recorded_release_snapshot="$worktree_root/.release-verify/$tag/release-snapshot.json"
+recorded_rulesets_snapshot="$worktree_root/.release-verify/$tag/tag-rulesets-snapshot.json"
+umask 077
+live_snapshot_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-governance-live-release.XXXXXX")
+trap 'rm -rf "$live_snapshot_dir"' EXIT
+live_release_snapshot="$live_snapshot_dir/release-snapshot.json"
+live_rulesets_snapshot="$live_snapshot_dir/tag-rulesets-snapshot.json"
+
+release_id=$(gh api --paginate "repos/$repo/releases?per_page=100" --jq '.[] | select(.tag_name=="'"$tag"'") | .id')
+test -n "$release_id"
+test "$(printf '%s\n' "$release_id" | wc -l | tr -d ' ')" = 1
+tag_object=$(gh api "repos/$repo/git/ref/tags/$tag" --jq .object.sha)
+peeled_commit=$(gh api "repos/$repo/git/tags/$tag_object" --jq .object.sha)
+gh api "repos/$repo/releases/$release_id" > "$live_snapshot_dir/release-api.json"
+gh api "repos/$repo/immutable-releases" > "$live_snapshot_dir/immutable-releases.json"
+gh api "repos/$repo/rulesets/$create_ruleset_id" > "$live_snapshot_dir/ruleset-$create_ruleset_id.json"
+gh api "repos/$repo/rulesets/$mutate_ruleset_id" > "$live_snapshot_dir/ruleset-$mutate_ruleset_id.json"
+
+python3 - "$tag" "$peeled_commit" \
+  "$live_snapshot_dir/release-api.json" \
+  "$live_snapshot_dir/immutable-releases.json" \
+  "$live_release_snapshot" <<'PY'
+import json
+import sys
+
+tag, peeled_commit, release_path, immutable_path, out_path = sys.argv[1:]
+with open(release_path, encoding="utf-8") as handle:
+    release = json.load(handle)
+with open(immutable_path, encoding="utf-8") as handle:
+    immutable = json.load(handle)
+assets = [
+    {"name": asset["name"], "digest": asset["digest"]}
+    for asset in sorted(release.get("assets", []), key=lambda item: item["name"])
+]
+expected_names = sorted([
+    f"agent-governance-evidence_{tag}_darwin-arm64.tar.gz",
+    f"agent-governance-evidence_{tag}_linux-amd64.tar.gz",
+    f"agent-governance-evidence_{tag}_source.tar.gz",
+    "SHA256SUMS",
+    "build-provenance.sigstore.json",
+])
+if release.get("tag_name") != tag or not release.get("draft") or not release.get("prerelease"):
+    raise SystemExit("unexpected draft release identity or state")
+if [asset["name"] for asset in assets] != expected_names:
+    raise SystemExit("unexpected draft release assets")
+if len(assets) != 5 or any(not str(asset["digest"]).startswith("sha256:") for asset in assets):
+    raise SystemExit("unexpected draft release digests")
+with open(out_path, "w", encoding="utf-8") as handle:
+    json.dump(
+        {
+            "release_id": release["id"],
+            "tag": release["tag_name"],
+            "draft": release["draft"],
+            "prerelease": release["prerelease"],
+            "assets": assets,
+            "peeled_commit": peeled_commit,
+            "immutable_enabled": immutable["enabled"],
+            "immutable_enforced_by_owner": immutable["enforced_by_owner"],
+        },
+        handle,
+        indent=2,
+        sort_keys=True,
+    )
+    handle.write("\n")
+PY
+
+python3 - "$create_ruleset_id" "$mutate_ruleset_id" \
+  "$live_snapshot_dir/ruleset-$create_ruleset_id.json" \
+  "$live_snapshot_dir/ruleset-$mutate_ruleset_id.json" \
+  "$live_rulesets_snapshot" <<'PY'
+import json
+import sys
+
+create_id, mutate_id, create_path, mutate_path, out_path = sys.argv[1:]
+expected_ids = [int(create_id), int(mutate_id)]
+
+def normalize(path):
+    with open(path, encoding="utf-8") as handle:
+        ruleset = json.load(handle)
+    ref_name = ruleset.get("conditions", {}).get("ref_name", {})
+    return {
+        "id": ruleset["id"],
+        "name": ruleset["name"],
+        "target": ruleset["target"],
+        "enforcement": ruleset["enforcement"],
+        "conditions": {
+            "ref_name": {
+                "include": sorted(ref_name.get("include", [])),
+                "exclude": sorted(ref_name.get("exclude", [])),
+            }
+        },
+        "bypass_actors": sorted(
+            [
+                {
+                    "actor_id": actor["actor_id"],
+                    "actor_type": actor["actor_type"],
+                    "bypass_mode": actor["bypass_mode"],
+                }
+                for actor in ruleset.get("bypass_actors", [])
+            ],
+            key=lambda actor: (actor["actor_type"], actor["actor_id"], actor["bypass_mode"]),
+        ),
+        "rules": sorted(ruleset.get("rules", []), key=lambda rule: json.dumps(rule, sort_keys=True)),
+    }
+
+rulesets = sorted([normalize(create_path), normalize(mutate_path)], key=lambda item: item["id"])
+if [ruleset["id"] for ruleset in rulesets] != expected_ids:
+    raise SystemExit("unexpected tag ruleset ids")
+for ruleset in rulesets:
+    if ruleset["target"] != "tag" or ruleset["enforcement"] != "active":
+        raise SystemExit("unexpected tag ruleset target or enforcement")
+    if ruleset["conditions"]["ref_name"] != {"include": ["refs/tags/v*"], "exclude": []}:
+        raise SystemExit("unexpected tag ruleset ref condition")
+with open(out_path, "w", encoding="utf-8") as handle:
+    json.dump(rulesets, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PY
 
 python3 - "$tag" "$commit" \
-  "$verified_release_snapshot" "$live_release_snapshot" \
-  "$verified_rulesets_snapshot" "$live_rulesets_snapshot" <<'PY' && \
+  "$recorded_release_snapshot" "$live_release_snapshot" \
+  "$recorded_rulesets_snapshot" "$live_rulesets_snapshot" <<'PY' && \
 gh release edit "$tag" -R "$repo" --draft=false
 import json
 import sys
 
 tag, commit, verified_release_path, live_release_path, verified_rulesets_path, live_rulesets_path = sys.argv[1:]
-expected_names = [
-    f"agent-governance-evidence_{tag}_linux-amd64.tar.gz",
+expected_names = sorted([
     f"agent-governance-evidence_{tag}_darwin-arm64.tar.gz",
+    f"agent-governance-evidence_{tag}_linux-amd64.tar.gz",
     f"agent-governance-evidence_{tag}_source.tar.gz",
     "SHA256SUMS",
     "build-provenance.sigstore.json",
-]
+])
 with open(verified_release_path, encoding="utf-8") as handle:
     verified_release = json.load(handle)
 with open(live_release_path, encoding="utf-8") as handle:
