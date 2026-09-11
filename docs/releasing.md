@@ -12,27 +12,55 @@ independent approvals.
 
 For an experimental tag such as v0.1.0-alpha.1, the release workflow first
 builds native Linux amd64 and macOS arm64 archives, creates SHA256SUMS, signs
-the four build subjects, and creates a draft prerelease. Download exactly five
-assets into a fresh directory and run:
+the four build subjects, and creates a draft prerelease. Before any local
+verification, check out the exact approved release commit in a detached
+worktree; do not let moving `main` substitute for `$commit`:
 
 ```bash
-assets=$(mktemp -d "${TMPDIR:-/tmp}/agent-governance-draft.XXXXXX")
-gh release download "$tag" -R liatrio/agent-governance-evidence \
-  --dir "$assets" --pattern '*'
-scripts/verify-release.sh --tag "$tag" --commit "$commit" --phase draft --assets-dir "$assets"
+verify_root=$(mktemp -d "${TMPDIR:-/tmp}/agent-governance-verify.XXXXXX")
+git fetch origin main
+git worktree add --detach "$verify_root" "$commit"
+cd "$verify_root"
+test "$(git rev-parse HEAD)" = "$commit"
+```
+
+For draft verification, use the exact bundle produced by the privileged draft
+retriever: five assets in `assets/` plus `release-metadata.json`. Reuse the
+recorded alpha.3 retrieval evidence; do not replace it with a fresh `main`
+checkout or a new ad hoc download:
+
+```bash
+draft_bundle=/path/from-privileged-draft-retriever
+assets="$draft_bundle/assets"
+metadata="$draft_bundle/release-metadata.json"
+scripts/verify-release.sh --tag "$tag" --commit "$commit" --phase draft \
+  --assets-dir "$assets" --metadata-file "$metadata"
 gh workflow run verify-release.yml -R liatrio/agent-governance-evidence \
   --ref "$tag" \
   -f tag="$tag" -f commit="$commit" -f phase=draft
 ```
 
-The dispatched draft verification workflow uses a same-run split: one
-retriever job with `contents: write` reads the live draft metadata and
-downloads the five assets, then the native verifier jobs run with
-`contents: read` only against that artifact handoff. Check that the workflow
-revision/run commit and both native jobs match `$commit`. Re-read
-immutable-release enablement, both tag rulesets, and the tag's peeled commit
-immediately before publication. No draft, source
-asset, or tag is overwritten: a collision or defect requires a new prerelease.
+The dispatched draft verification workflow uses a same-run split: the
+retriever job has `contents: write` so it can read live draft release
+identity/state and download the five assets. The native verifier jobs have
+`contents: read` only, receive the assets plus metadata artifact, and never
+receive credentials. That narrows exposure, but the retriever remains the
+publication-capable residual boundary. Check that the workflow revision, run
+commit, and both native jobs match `$commit`.
+
+Immediately before publication, re-read the live release and compare it
+against the verified snapshot: release identity/state, these exact five asset
+names and API digests, the tag's peeled commit, immutable-release enablement,
+and both `refs/tags/v*` rulesets.
+
+- `agent-governance-evidence_${tag}_linux-amd64.tar.gz`
+- `agent-governance-evidence_${tag}_darwin-arm64.tar.gz`
+- `agent-governance-evidence_${tag}_source.tar.gz`
+- `SHA256SUMS`
+- `build-provenance.sigstore.json`
+
+Any mismatch stops publication. No draft, source asset, or tag is overwritten:
+a collision or defect requires a new prerelease.
 
 ```bash
 gh release edit "$tag" -R liatrio/agent-governance-evidence --draft=false
