@@ -1,16 +1,20 @@
 # Agent-governance companion
 
-An experimental local standalone repository for authoring and demonstrating
-agent-deployment governance evidence. It is not a GitHub publication, release,
-or production policy promotion. AutoGov remains the generic Sigstore
-verification, OPA admission, and VSA engine; this companion owns the v0.1
-agent model, schema, producer fixtures, authoring CLI, and opt-in policy.
+Experimental standalone repository for agent-deployment governance evidence.
+It provides no production assurance. [`autogov`](https://github.com/liatrio/autogov)
+remains the generic Sigstore verification, OPA admission, and VSA engine; this
+repository owns the v0.1 model, schema, producer fixtures, authoring CLI, and
+opt-in policy.
+
+This is the canonical home of the experiment. The historical bundled copy
+remains in preserved `autogov` source history and releases; new work lands here
+through normal forward PRs without rewriting tags, releases, or history.
 
 ## standalone setup
 
 This repository builds independently. It does not download a verifier during
-tests or fall back to a nearby AutoGov checkout. Install the exact AutoGov
-v1.4.0 verifier once, export its absolute path, then run the standalone tasks:
+tests or fall back to a nearby `autogov` checkout. Install the exact
+`autogov` v1.4.0 verifier once, export its absolute path, then run:
 
 ```bash
 ./scripts/setup-autogov.sh
@@ -29,14 +33,14 @@ including unusable files, directories, and symlinks. If setup reports a
 collision, inspect it and deliberately move it aside before retrying; setup
 never silently reuses or overwrites it. Tests reject an unset, relative,
 missing, non-regular, or non-executable
-`AUTOGOV_BINARY`; they never build AutoGov implicitly. The fixture security
+`AUTOGOV_BINARY`; they never build `autogov` implicitly. The fixture security
 tests require Python 3.13 and retain the AGT 4.1.0 and wheel-provenance caveat
 described below.
 
-Two evidence producers (one pinned Microsoft AGT fixture, one minimal non-AGT
-fixture) each run the same four controlled conformance cases against the one
-governed tool, emit the same runtime-neutral JSON evidence contract, and are
-enforced through Auto Gov's **existing** offline path:
+Two evidence producers (one pinned Microsoft AGT fixture and one minimal
+non-AGT fixture) each run the same four controlled conformance cases against
+the one governed tool, emit the same runtime-neutral JSON evidence contract,
+and flow through `autogov`'s offline path:
 
 ```text
 producer evidence JSON (unbound test-result digest)
@@ -79,9 +83,9 @@ completion step before invoking the CLI; it is not a separate public command.
   verified.
 - **Two different policy digests.** The `runtimePolicy.artifact.digest` inside
   the deployment predicate identifies the policy governing the *agent at
-  runtime*. The policy digest recorded in the generated VSA identifies Auto
-  Gov's *admission* policy (this directory's Rego gate). They are different
-  artifacts and must never be described as the same thing.
+  runtime*. The policy digest recorded in the generated VSA identifies
+  `autogov`'s *admission* policy in this repository. They are different
+  artifacts and must not be described as the same thing.
 - **Demonstration signing.** The demo signs with a local, ephemeral CA/TSA
   created per run (`demokit`); it chains to nothing public and exists so the
   offline Sigstore verification path runs for real. Adapters never sign their
@@ -95,8 +99,8 @@ completion step before invoking the CLI; it is not a separate public command.
   companion-owned embedded schema is checked in at
   `internal/evidence/schemas/agent-governance-deployment-schema.json`.
 - **Artifact and CLI boundary.** The supported interface between the companion
-  and AutoGov is JSON/in-toto artifacts plus CLI execution. There is no public
-  Go SDK contract, and neither Go dependency graph imports the other.
+  and `autogov` is JSON/in-toto artifacts plus CLI execution. There is no
+  public Go SDK contract, and neither Go dependency graph imports the other.
 
 ## Stewardship and current scope
 
@@ -109,6 +113,29 @@ source-repository independence was audited separately and is not continuously
 checked here. [`MOVE_MAP.md`](MOVE_MAP.md) records source history, and
 [`checkpoint.sha256.json`](checkpoint.sha256.json) locks the promotion
 baseline's deterministic outputs, policy digest, and frozen inputs.
+
+## Experimental publication
+
+This repository is maintained experimentally by [Ian Hundere](MAINTAINERS.md).
+The distribution repository is `liatrio/agent-governance-evidence`. Release
+verification stays draft-first, and release assets become immutable only after
+explicit publication. See [releasing](docs/releasing.md) for the required
+evidence and [provenance](docs/provenance.md) for exact lineage.
+
+This work was inspired by PolyAgent/PolyProof experiments and a suggested
+intersection of `autogov` with the Microsoft Agent Governance Toolkit. That is
+inspiration only; it is not an endorsement or a production-readiness claim.
+Relevant public references:
+[toolkit documentation](https://microsoft.github.io/agent-governance-toolkit/)
+and [source repository](https://github.com/microsoft/agent-governance-toolkit).
+
+The known DW-14 limitation remains: an invalid evidence CLI target can leave
+partial retained demo output because preflight currently only stats the target.
+It is a future fix, not a claim of production assurance.
+
+Producer regeneration is supported only on Darwin/arm64 with Python 3.13,
+where the frozen AGT lock was recorded. Do not regenerate that lock on another
+platform; supporting another platform requires a future explicit pin decision.
 
 ## layout
 
@@ -125,7 +152,7 @@ cmd/checkpoint/      verifies the committed pre-extraction SHA-256 manifest
 internal/evidence/  private v0.1 model, validation, schema, and wire helpers
 internal/demokit/   demo/signing layer: statement building, local CA, bundles
 internal/integration/
-                     subprocess-only AutoGov admission and boundary tests
+                     subprocess-only autogov admission and boundary tests
 fixtures/            write_marker.py (the one controlled tool), the agent
                      artifact, and each producer's committed evidence + records
 policy/              the local, opt-in Rego admission gate (NOT part of
@@ -167,7 +194,7 @@ From a clean checkout of this repository:
 
 ```bash
 # With AUTOGOV_BINARY set to the setup output, build both companion binaries
-# and run both producers' signed matrices through AutoGov's offline verifier.
+# and run both producers' signed matrices through autogov's offline verifier.
 task demo
 ```
 
@@ -224,7 +251,7 @@ does not match the pin. `lock.sh` regenerates `requirements.lock.txt`
 (compiled wheels are platform-specific; the committed lock was generated on
 macOS arm64 / CPython 3.13 — regenerate it on the platform you run on).
 
-Producers never call Auto Gov: they stop at redacted JSON. Evidence and
+Producers never call `autogov`: they stop at redacted JSON. Evidence and
 records contain no prompts, tool arguments, model output, credentials, or
 temporary paths — only bounded redacted references and digests. Each harness
 creates its own temporary directory for `write-marker` and removes it.

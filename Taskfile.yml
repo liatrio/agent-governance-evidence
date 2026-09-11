@@ -3,6 +3,7 @@ version: '3'
 vars:
   BINARY_DIR: bin
   GOLANGCI_LINT_VERSION: v2.12.2
+  ACTIONLINT_VERSION: v1.7.12
 
 env:
   GOTOOLCHAIN: go1.26.6
@@ -43,3 +44,23 @@ tasks:
     desc: Lint with golangci-lint v2.12.2
     cmds:
       - go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{.GOLANGCI_LINT_VERSION}} run
+
+  ci:
+    desc: Run the Linux hosted acceptance contract
+    cmds:
+      - ./scripts/ci.sh
+
+  regenerate-producers:
+    desc: Regenerate and byte-compare producer evidence on macOS arm64/Python 3.13
+    cmds:
+      - ./scripts/regenerate-producers.sh
+
+  release-test:
+    desc: Run the black-box release guard and workflow test matrix
+    cmds:
+      - go test -count=1 -v ./internal/release
+
+  workflow-lint:
+    desc: Lint GitHub Actions workflows with actionlint v1.7.12
+    cmds:
+      - go run github.com/rhysd/actionlint/cmd/actionlint@{{.ACTIONLINT_VERSION}} .github/workflows/*.yml
