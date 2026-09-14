@@ -885,6 +885,76 @@ func violationsContain(t *testing.T, v *vsaDocument, substring string) bool {
 	return false
 }
 
+// TestAgentGovernanceDuplicateCaseRejectedByPositiveConjunct proves that
+// duplicate case ids/kinds are rejected by valid_case_cardinality alone, not
+// only by the violations safety-net conjunct. if this test fails it means the
+// duplicate-case check has no positive-side enforcement and a future refactor
+// that removes count(violations)==0 would silently admit such inputs.
+func TestAgentGovernanceDuplicateCaseRejectedByPositiveConjunct(t *testing.T) {
+	signer, err := demokit.NewSigner(agDemoIdentity, agDemoIssuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	built, err := demokit.BuildCase(agEvidencePath(t, "non-agt", "allowed-action"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// append cases[0] to itself — produces duplicate id and kind
+	dupMutate := func(body map[string]interface{}) {
+		conformance := body["conformance"].(map[string]interface{})
+		cases := conformance["cases"].([]interface{})
+		conformance["cases"] = append(cases, cases[0])
+	}
+	deploymentBundle, testResultBundle := signModifiedDeployment(t, signer, built, dupMutate)
+
+	// build policy input the same way signedLinkageValid does
+	input := []interface{}{
+		map[string]interface{}{
+			"dsseEnvelope": map[string]interface{}{
+				"payload":     base64.StdEncoding.EncodeToString(signedBundlePayload(t, deploymentBundle)),
+				"payloadType": "application/vnd.in-toto+json",
+			},
+		},
+		map[string]interface{}{
+			"dsseEnvelope": map[string]interface{}{
+				"payload":     base64.StdEncoding.EncodeToString(signedBundlePayload(t, testResultBundle)),
+				"payloadType": "application/vnd.in-toto+json",
+			},
+		},
+	}
+
+	policyPath := filepath.Join(agCompanionDir(t), "policy", "agent_governance.rego")
+	raw, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatalf("read policy: %v", err)
+	}
+	// strip the violations safety-net so only positive conjuncts remain;
+	// valid_case_cardinality must reject the duplicate input on its own
+	stripped := strings.ReplaceAll(string(raw), "\tcount(agent_governance_violations) == 0\n", "")
+	if stripped == string(raw) {
+		t.Fatal("violations conjunct not found in policy — update the needle string")
+	}
+
+	results, err := rego.New(
+		rego.Query("data.governance.allow"),
+		rego.Module("agent_governance.rego", stripped),
+		rego.Input(input),
+	).Eval(context.Background())
+	if err != nil {
+		t.Fatalf("evaluate stripped policy: %v", err)
+	}
+	// allow must be false (undefined or explicitly false) — no results means undefined
+	for _, r := range results {
+		for _, e := range r.Expressions {
+			if b, ok := e.Value.(bool); ok && b {
+				t.Error("allow returned true for duplicate cases without the violations conjunct — valid_case_cardinality does not enforce uniqueness")
+			}
+		}
+	}
+}
+
 // runtime portability: both producers must project the same policy-semantic
 // tuple per case kind while their producer-specific identities and evidence
 // digests stay distinct and individually bound.
