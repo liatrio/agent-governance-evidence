@@ -66,6 +66,30 @@ test-result statement payload. Producer output is intentionally unbound. In
 the demonstration, the private `internal/demokit` signing helper performs that
 completion step before invoking the CLI; it is not a separate public command.
 
+## operator configuration
+
+The admission gate pins which runtime policies it will admit. A deployment
+statement whose `runtimePolicy.artifact.digest` is outside the approved set is
+not admissible, for the same reason the controlled tool is digest-pinned: a
+shape-valid digest proves only that *some* policy was named, never *which*.
+
+The default set is the SHA-256 of the two checked-in adapter runtime policies
+(`adapters/agt/runtime_policy.yaml`, `adapters/non-agt/runtime_policy.json`),
+both frozen inputs in the checkpoint. Override it at runtime without forking
+the policy:
+
+```bash
+autogov offline ... \
+  --policy-bundle-path policy/ \
+  --policy-data-path config/examples/default-allowlist.json
+```
+
+Absence of the data document applies that built-in default; an unconfigured
+gate is never an unconstrained one. An explicitly empty allowlist admits
+nothing rather than everything. See
+[`config/examples/README.md`](config/examples/README.md) for the overlay
+format and the shipped examples.
+
 ## honest scope and limits
 
 - **One controlled tool.** The only governed action is the fixture-only
@@ -86,6 +110,13 @@ completion step before invoking the CLI; it is not a separate public command.
   runtime*. The policy digest recorded in the generated VSA identifies
   `autogov`'s *admission* policy in this repository. They are different
   artifacts and must not be described as the same thing.
+- **The runtime-policy pin is only as trustworthy as its source.** The gate
+  now proves the loaded runtime policy is one the operator approved, not
+  merely that a policy was loaded. It does not prove the approved digest
+  describes a policy that actually denies anything, and `--policy-data-path`
+  takes a local path with no digest pin of its own — `--policy-bundle-digest`
+  covers only `ghrel://` bundle paths. Whoever can write the data document can
+  widen the allowlist.
 - **Demonstration signing.** The demo signs with a local, ephemeral CA/TSA
   created per run (`demokit`); it chains to nothing public and exists so the
   offline Sigstore verification path runs for real. Adapters never sign their

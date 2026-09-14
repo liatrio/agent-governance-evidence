@@ -15,6 +15,7 @@ import (
 	"github.com/liatrio/agent-governance-evidence/internal/demokit"
 	"github.com/open-policy-agent/opa/v1/ast"
 	"github.com/open-policy-agent/opa/v1/rego"
+	"github.com/open-policy-agent/opa/v1/storage/inmem"
 )
 
 const inTotoPayloadType = "application/vnd.in-toto+json"
@@ -52,7 +53,23 @@ func evaluatePolicy(t *testing.T, statements ...[]byte) policyResult {
 	return evaluatePolicySource(t, string(module), statements...)
 }
 
+// evaluatePolicyWithData evaluates the checked-in gate against an operator
+// data document, the way `autogov offline --policy-data-path` supplies one.
+func evaluatePolicyWithData(t *testing.T, data map[string]interface{}, statements ...[]byte) policyResult {
+	t.Helper()
+	module, err := os.ReadFile("agent_governance.rego")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return evaluatePolicySourceWithData(t, string(module), data, statements...)
+}
+
 func evaluatePolicySource(t *testing.T, source string, statements ...[]byte) policyResult {
+	t.Helper()
+	return evaluatePolicySourceWithData(t, source, nil, statements...)
+}
+
+func evaluatePolicySourceWithData(t *testing.T, source string, data map[string]interface{}, statements ...[]byte) policyResult {
 	t.Helper()
 	input := make([]interface{}, 0, len(statements))
 	for _, statement := range statements {
@@ -63,11 +80,17 @@ func evaluatePolicySource(t *testing.T, source string, statements ...[]byte) pol
 			},
 		})
 	}
-	results, err := rego.New(
+	options := []func(*rego.Rego){
 		rego.Query("data.governance"),
 		rego.Module("agent_governance.rego", source),
 		rego.Input(input),
-	).Eval(context.Background())
+	}
+	// a nil map is "no data document at all", distinct from a document that
+	// carries an empty or null allowlist
+	if data != nil {
+		options = append(options, rego.Store(inmem.NewFromObject(data)))
+	}
+	results, err := rego.New(options...).Eval(context.Background())
 	if err != nil {
 		t.Fatalf("evaluate policy: %v", err)
 	}
@@ -116,6 +139,26 @@ func requireViolation(t *testing.T, result policyResult, want string) {
 		}
 	}
 	t.Fatalf("violations %q do not contain %q", result.violations, want)
+}
+
+func requireNoViolation(t *testing.T, result policyResult, unwanted string) {
+	t.Helper()
+	for _, violation := range result.violations {
+		if strings.Contains(violation, unwanted) {
+			t.Fatalf("violations %q unexpectedly contain %q", result.violations, unwanted)
+		}
+	}
+}
+
+// configExample reads a shipped operator overlay so the checked-in examples
+// stay load-bearing rather than documentation-only.
+func configExample(t *testing.T, name string) map[string]interface{} {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "config", "examples", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return object(t, data)
 }
 
 func builtCase(t *testing.T, name string) *demokit.BuiltCase {
@@ -782,7 +825,121 @@ func TestAgentGovernanceGateAdmitsTwoPositiveCases(t *testing.T) {
 	requireAllowed(t, evaluatePolicy(t, jsonBytes(t, statement), allowed.TestResultStatement, denied.TestResultStatement))
 }
 
-// These in-test source mutants prove four security-critical positive rules are
+const (
+	agtRuntimePolicyDigest    = "sha256:5444ca7781cce3bed4236ee405c7fc0d2db9fe086f9e8d99c5bbaa1fcf5dec6c"
+	nonAGTRuntimePolicyDigest = "sha256:874d825f3cad0134979cc8291d5b045928dfa19d26012bf0db0d228371a31bf9"
+	allowlistViolation        = "not in the approved runtime policy allowlist"
+)
+
+// repinRuntimePolicy retargets only runtimePolicy.artifact.digest. no other
+// predicate field and no test-result annotation binds that digest, so a
+// denial can only come from the allowlist.
+func repinRuntimePolicy(t *testing.T, built *demokit.BuiltCase, digest string) []byte {
+	t.Helper()
+	return relinkDeployment(t, built, built.TestResultStatement, func(predicate map[string]interface{}) {
+		policy := predicate["runtimePolicy"].(map[string]interface{})
+		policy["artifact"].(map[string]interface{})["digest"] = digest
+	})
+}
+
+// The gate must prove WHICH runtime policy governed the agent, not merely
+// that one was loaded. An absent allowlist applies a non-empty built-in
+// default; an emptied one admits nothing.
+func TestAgentGovernanceRuntimePolicyAllowlist(t *testing.T) {
+	built := builtCase(t, "allowed-action")
+	outsideDigest := "sha256:" + strings.Repeat("a", 64)
+
+	// guards the constants above against a fixture change that would leave
+	// every case below passing for the wrong reason
+	t.Run("fixture carries the expected runtime policy digest", func(t *testing.T) {
+		predicate := deploymentPredicate(t, built.DeploymentStatement)
+		policy := predicate["runtimePolicy"].(map[string]interface{})
+		got := policy["artifact"].(map[string]interface{})["digest"]
+		if got != nonAGTRuntimePolicyDigest {
+			t.Fatalf("fixture runtime policy digest = %v, want %v", got, nonAGTRuntimePolicyDigest)
+		}
+	})
+
+	t.Run("absent data applies the non-empty built-in default", func(t *testing.T) {
+		requireAllowed(t, evaluatePolicy(t, built.DeploymentStatement, built.TestResultStatement))
+	})
+
+	t.Run("absent data denies a digest outside the default", func(t *testing.T) {
+		result := evaluatePolicy(t, repinRuntimePolicy(t, built, outsideDigest), built.TestResultStatement)
+		requireDenied(t, result)
+		requireViolation(t, result, allowlistViolation)
+		requireViolation(t, result, "loaded, enforcing, exercised control")
+	})
+
+	t.Run("operator allowlist admits the digest it names", func(t *testing.T) {
+		data := map[string]interface{}{"approved_runtime_policy_digests": []interface{}{outsideDigest}}
+		requireAllowed(t, evaluatePolicyWithData(t, data, repinRuntimePolicy(t, built, outsideDigest), built.TestResultStatement))
+	})
+
+	t.Run("operator allowlist denies the digests it omits", func(t *testing.T) {
+		data := map[string]interface{}{"approved_runtime_policy_digests": []interface{}{outsideDigest}}
+		result := evaluatePolicyWithData(t, data, built.DeploymentStatement, built.TestResultStatement)
+		requireDenied(t, result)
+		requireViolation(t, result, allowlistViolation)
+	})
+
+	t.Run("null allowlist falls back to the built-in default", func(t *testing.T) {
+		data := map[string]interface{}{"approved_runtime_policy_digests": nil}
+		requireAllowed(t, evaluatePolicyWithData(t, data, built.DeploymentStatement, built.TestResultStatement))
+	})
+
+	// a non-set value yields no members, so it denies rather than admits
+	t.Run("malformed allowlist admits nothing", func(t *testing.T) {
+		data := map[string]interface{}{"approved_runtime_policy_digests": "sha256:whatever"}
+		result := evaluatePolicyWithData(t, data, built.DeploymentStatement, built.TestResultStatement)
+		requireDenied(t, result)
+		requireViolation(t, result, allowlistViolation)
+	})
+
+	// an unloaded policy governs nothing, so it is never attributed to the
+	// allowlist — these fixtures keep failing for their original reason
+	t.Run("unloaded runtime policy is not attributed to the allowlist", func(t *testing.T) {
+		noPolicy := builtCase(t, "no-policy-loaded")
+		result := evaluatePolicy(t, noPolicy.DeploymentStatement, noPolicy.TestResultStatement)
+		requireDenied(t, result)
+		requireNoViolation(t, result, allowlistViolation)
+		requireViolation(t, result, "middleware present with no runtime policy loaded")
+	})
+}
+
+// The shipped overlays are the documented operator interface, so each one is
+// evaluated rather than merely described.
+func TestAgentGovernanceRuntimePolicyAllowlistExamples(t *testing.T) {
+	built := builtCase(t, "allowed-action")
+
+	t.Run("default-allowlist.json matches the built-in default", func(t *testing.T) {
+		data := configExample(t, "default-allowlist.json")
+		requireAllowed(t, evaluatePolicyWithData(t, data, built.DeploymentStatement, built.TestResultStatement))
+		requireAllowed(t, evaluatePolicyWithData(t, data,
+			repinRuntimePolicy(t, built, agtRuntimePolicyDigest), built.TestResultStatement))
+	})
+
+	t.Run("agt-only.json narrows to one producer", func(t *testing.T) {
+		data := configExample(t, "agt-only.json")
+		requireAllowed(t, evaluatePolicyWithData(t, data,
+			repinRuntimePolicy(t, built, agtRuntimePolicyDigest), built.TestResultStatement))
+
+		result := evaluatePolicyWithData(t, data, built.DeploymentStatement, built.TestResultStatement)
+		requireDenied(t, result)
+		requireViolation(t, result, allowlistViolation)
+	})
+
+	t.Run("deny-all.json admits nothing", func(t *testing.T) {
+		data := configExample(t, "deny-all.json")
+		for _, digest := range []string{agtRuntimePolicyDigest, nonAGTRuntimePolicyDigest} {
+			result := evaluatePolicyWithData(t, data, repinRuntimePolicy(t, built, digest), built.TestResultStatement)
+			requireDenied(t, result)
+			requireViolation(t, result, allowlistViolation)
+		}
+	})
+}
+
+// These in-test source mutants prove five security-critical positive rules are
 // load-bearing. Mutants are materialized only under t.TempDir, outside the
 // loadable and policy-digested directory.
 func TestSecurityCriticalPolicySourceMutantsAreKilled(t *testing.T) {
@@ -802,6 +959,8 @@ func TestSecurityCriticalPolicySourceMutantsAreKilled(t *testing.T) {
 	badLinkage := object(t, built.DeploymentStatement)
 	badLinkageCase := badLinkage["predicate"].(map[string]interface{})["conformance"].(map[string]interface{})["cases"].([]interface{})[0].(map[string]interface{})
 	badLinkageCase["testResult"].(map[string]interface{})["statementDigest"] = "sha256:" + strings.Repeat("f", 64)
+
+	unapprovedPolicy := repinRuntimePolicy(t, built, "sha256:"+strings.Repeat("a", 64))
 
 	badAnnotationDeployment, badAnnotationResult := mutatedTestResult(t, built, func(predicate map[string]interface{}) {
 		configuration := predicate["configuration"].([]interface{})
@@ -830,6 +989,13 @@ func TestSecurityCriticalPolicySourceMutantsAreKilled(t *testing.T) {
 			next:        "runtime_policy_consistent(s) if {",
 			replacement: "deployment_enforcing(s) if {\n\tis_object(s)\n}",
 			statements:  [][]byte{jsonBytes(t, notExercised), built.TestResultStatement},
+		},
+		{
+			name:        "runtime_policy_approved",
+			start:       "runtime_policy_approved(s) if {",
+			next:        "default_behavior_valid(s) if s.predicate",
+			replacement: "runtime_policy_approved(s) if {\n\tis_object(s)\n}",
+			statements:  [][]byte{unapprovedPolicy, built.TestResultStatement},
 		},
 		{
 			name:        "linkage_valid",

@@ -54,6 +54,30 @@ controlled_tool_action_class := "filesystem.write.marker"
 # merely by making the test-result descriptor agree with a supplied digest.
 controlled_tool_digest := "sha256:9df776a3bb10bd24bb1693b274a49a1a0e3e74b391d24171f35fc88d77e0b8da"
 
+# the runtime policy decides whether the agent is governed at all, so it is
+# pinned for the same reason the controlled tool above is: a shape-valid
+# digest proves only that some policy was named, never which one. the default
+# is the sha256 of the two checked-in adapter runtime policies
+# (adapters/agt/runtime_policy.yaml, adapters/non-agt/runtime_policy.json); an
+# operator overrides the set at runtime with
+# {"approved_runtime_policy_digests": [...]} via --policy-data-path.
+#
+# absence applies that default, which is deliberately non-empty — an
+# unconfigured gate is never an unconstrained one. an explicitly empty set
+# admits nothing, because membership in an empty set is unsatisfiable, so the
+# allowlist can never go vacuously true the way an `every` over an empty
+# collection does.
+_approved_runtime_policy_digests := data.approved_runtime_policy_digests
+
+default approved_runtime_policy_digests := {
+	"sha256:5444ca7781cce3bed4236ee405c7fc0d2db9fe086f9e8d99c5bbaa1fcf5dec6c",
+	"sha256:874d825f3cad0134979cc8291d5b045928dfa19d26012bf0db0d228371a31bf9",
+}
+
+approved_runtime_policy_digests := {digest | some digest in _approved_runtime_policy_digests} if {
+	_approved_runtime_policy_digests != null
+}
+
 ann_key(suffix) := sprintf("%s#%s", [deployment_type, suffix])
 
 # --- decoded statements -----------------------------------------------------
@@ -377,8 +401,9 @@ nested_core_shape_valid(s) if {
 	}
 }
 
-# configured-and-exercised enforcement: policy actually loaded, enforcing
-# mode, and every REQUIRED intervention point OBSERVED (never inferred).
+# configured-and-exercised enforcement: an APPROVED policy actually loaded,
+# enforcing mode, and every REQUIRED intervention point OBSERVED (never
+# inferred).
 #
 # `every` over an empty collection is vacuously true, so the required set must
 # be non-empty for the check below to assert anything. the embedded schema's
@@ -386,6 +411,7 @@ nested_core_shape_valid(s) if {
 # statements it did not produce, so it re-establishes the floor itself.
 deployment_enforcing(s) if {
 	runtime_policy_consistent(s)
+	runtime_policy_approved(s)
 	s.predicate.runtimePolicy.loaded == true
 	s.predicate.runtimePolicy.count >= 1
 	s.predicate.enforcement.mode == "enforce"
@@ -408,6 +434,12 @@ runtime_policy_consistent(s) if {
 runtime_policy_consistent(s) if {
 	s.predicate.runtimePolicy.count == 0
 	s.predicate.runtimePolicy.loaded == false
+}
+
+# an absent, malformed, or non-allowlisted digest leaves this undefined, so
+# admission can only lose facts here, never gain them.
+runtime_policy_approved(s) if {
+	s.predicate.runtimePolicy.artifact.digest in approved_runtime_policy_digests
 }
 
 default_behavior_valid(s) if s.predicate.enforcement.defaultBehavior in {"allow", "deny"}
@@ -661,6 +693,15 @@ agent_governance_violations contains msg if {
 	some s in deployment_statements
 	not runtime_policy_consistent(s)
 	msg := sprintf("%s: runtime policy loaded/count facts are contradictory or out of bounds", [subject_ref(s)])
+}
+
+# only attributed when the statement claims a policy actually governed the
+# agent; an unloaded policy has nothing to approve
+agent_governance_violations contains msg if {
+	some s in deployment_statements
+	s.predicate.runtimePolicy.loaded == true
+	not runtime_policy_approved(s)
+	msg := sprintf("%s: loaded runtime policy digest is not in the approved runtime policy allowlist", [subject_ref(s)])
 }
 
 agent_governance_violations contains msg if {

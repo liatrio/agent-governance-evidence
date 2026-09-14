@@ -37,7 +37,7 @@ const (
 	agVSAStatementType   = "https://in-toto.io/Statement/v1"
 	agVSAPredicateType   = "https://slsa.dev/verification_summary/v1"
 	agAdmissionPolicyURI = "https://github.com/liatrio/autogov/agent-governance/policy"
-	agAdmissionPolicySHA = "35ba8fe7713f95c77800f086f3e0af2b7034446770375a52a84debffed2963b6"
+	agAdmissionPolicySHA = "330b6a98f17288996f2a49e9ecdf91e7d4c7d0da3d27d1f6130585dacb6d72ef"
 )
 
 var agCaseFiles = []struct {
@@ -154,10 +154,11 @@ func signModifiedDeployment(t *testing.T, signer *demokit.Signer, built *demokit
 }
 
 // runAgentGovernanceOffline drives the real offline command path with the
-// local opt-in policy bundle and enforcing exit behavior.
-func runAgentGovernanceOffline(t *testing.T, attestationsPath, trustedRootPath, imageDigest, vsaOutput string) error {
+// local opt-in policy bundle and enforcing exit behavior. extraArgs carries
+// optional operator flags such as --policy-data-path.
+func runAgentGovernanceOffline(t *testing.T, attestationsPath, trustedRootPath, imageDigest, vsaOutput string, extraArgs ...string) error {
 	t.Helper()
-	cmd := exec.Command(autogovBinary, "offline",
+	args := append([]string{"offline",
 		"--attestations", attestationsPath,
 		"--trusted-root", trustedRootPath,
 		"--cert-identity", agDemoIdentity,
@@ -169,12 +170,19 @@ func runAgentGovernanceOffline(t *testing.T, attestationsPath, trustedRootPath, 
 		"--generate-vsa",
 		"--fail-on-policy-error",
 		"--quiet",
-	)
+	}, extraArgs...)
+	cmd := exec.Command(autogovBinary, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("autogov offline: %w\n%s", err, output)
 	}
 	return nil
+}
+
+// agConfigExample resolves a shipped operator overlay under config/examples.
+func agConfigExample(t *testing.T, name string) string {
+	t.Helper()
+	return filepath.Join(agCompanionDir(t), "config", "examples", name)
 }
 
 func readVSA(t *testing.T, path string) *vsaDocument {
@@ -553,6 +561,112 @@ func TestAgentGovernanceUnknownOutcomeFailsClosed(t *testing.T) {
 	}
 }
 
+// the runtime-policy allowlist decides WHICH policy governed the agent. both
+// branches run through the real offline seam: the built-in default with no
+// operator data, and an operator overlay supplied via --policy-data-path.
+func TestAgentGovernanceRuntimePolicyAllowlistAdmission(t *testing.T) {
+	signer, err := demokit.NewSigner(agDemoIdentity, agDemoIssuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	trustedRoot := filepath.Join(dir, "trusted-root.json")
+	rootJSON, err := signer.TrustedRootJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(trustedRoot, rootJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	built, err := demokit.BuildCase(agEvidencePath(t, "non-agt", "allowed-action"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	substituteDigest := "sha256:" + strings.Repeat("a", 64)
+	substitute := func(body map[string]interface{}) {
+		policy := body["runtimePolicy"].(map[string]interface{})
+		policy["artifact"].(map[string]interface{})["digest"] = substituteDigest
+	}
+
+	// an overlay naming the substituted digest, written in-test so no frozen
+	// fixture bytes are added
+	operatorData := filepath.Join(dir, "operator-allowlist.json")
+	overlay, err := json.Marshal(map[string]interface{}{
+		"approved_runtime_policy_digests": []string{substituteDigest},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(operatorData, overlay, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(t *testing.T, name string, deployment, testResult []byte, extraArgs ...string) *vsaDocument {
+		t.Helper()
+		attestations := filepath.Join(dir, name+".jsonl")
+		writeBundleLines(t, attestations, deployment, testResult)
+		vsaOut := filepath.Join(dir, name+"-vsa.json")
+		runErr := runAgentGovernanceOffline(t, attestations, trustedRoot, "sha256:"+built.AgentDigestHex, vsaOut, extraArgs...)
+		v := readVSA(t, vsaOut)
+		if (runErr == nil) != (v.Predicate.VerificationResult == "PASSED") {
+			t.Fatalf("%s: exit status and VSA result disagree (err=%v, result=%s)", name, runErr, v.Predicate.VerificationResult)
+		}
+		return v
+	}
+
+	t.Run("substituted runtime policy is denied by the built-in default", func(t *testing.T) {
+		deployment, testResult := signModifiedDeployment(t, signer, built, substitute)
+		v := run(t, "allowlist-substituted", deployment, testResult)
+		if v.Predicate.VerificationResult != "FAILED" {
+			t.Errorf("VSA = %s, want FAILED", v.Predicate.VerificationResult)
+		}
+		if !violationsContain(t, v, "not in the approved runtime policy allowlist") {
+			t.Error("expected an allowlist-attributed violation")
+		}
+	})
+
+	t.Run("operator overlay admits the digest it names", func(t *testing.T) {
+		deployment, testResult := signModifiedDeployment(t, signer, built, substitute)
+		v := run(t, "allowlist-operator-approved", deployment, testResult, "--policy-data-path", operatorData)
+		if v.Predicate.VerificationResult != "PASSED" {
+			t.Errorf("VSA = %s, want PASSED", v.Predicate.VerificationResult)
+		}
+	})
+
+	t.Run("operator overlay denies the digests it omits", func(t *testing.T) {
+		deployment, testResult := signBuiltCase(t, signer, built)
+		v := run(t, "allowlist-operator-omitted", deployment, testResult, "--policy-data-path", operatorData)
+		if v.Predicate.VerificationResult != "FAILED" {
+			t.Errorf("VSA = %s, want FAILED", v.Predicate.VerificationResult)
+		}
+		if !violationsContain(t, v, "not in the approved runtime policy allowlist") {
+			t.Error("expected an allowlist-attributed violation")
+		}
+	})
+
+	// an emptied allowlist admits nothing; the vacuity trap stays closed
+	t.Run("deny-all overlay admits nothing", func(t *testing.T) {
+		deployment, testResult := signBuiltCase(t, signer, built)
+		v := run(t, "allowlist-deny-all", deployment, testResult, "--policy-data-path", agConfigExample(t, "deny-all.json"))
+		if v.Predicate.VerificationResult != "FAILED" {
+			t.Errorf("VSA = %s, want FAILED", v.Predicate.VerificationResult)
+		}
+		if !violationsContain(t, v, "not in the approved runtime policy allowlist") {
+			t.Error("expected an allowlist-attributed violation")
+		}
+	})
+
+	t.Run("shipped default overlay matches the built-in default", func(t *testing.T) {
+		deployment, testResult := signBuiltCase(t, signer, built)
+		v := run(t, "allowlist-shipped-default", deployment, testResult, "--policy-data-path", agConfigExample(t, "default-allowlist.json"))
+		if v.Predicate.VerificationResult != "PASSED" {
+			t.Errorf("VSA = %s, want PASSED", v.Predicate.VerificationResult)
+		}
+	})
+}
+
 // adversarial admission tests: subject substitution, linkage mismatch, and
 // duplicate pairing must all fail closed.
 func TestAgentGovernanceAdversarialEvidenceFailsClosed(t *testing.T) {
@@ -791,6 +905,17 @@ func TestAgentGovernanceAdversarialEvidenceFailsClosed(t *testing.T) {
 				violation: "adapter contract version or runtime digest linkage",
 				mutate: func(body map[string]interface{}) {
 					body["adapter"].(map[string]interface{})["runtimeDigest"] = "sha256:" + strings.Repeat("f", 64)
+				},
+			},
+			{
+				// identical to allowed-action but for a substituted runtime
+				// policy: shape-valid, still loaded, still enforcing, and
+				// still linked to its signed test-result
+				name:      "substituted runtime policy digest",
+				violation: "not in the approved runtime policy allowlist",
+				mutate: func(body map[string]interface{}) {
+					policy := body["runtimePolicy"].(map[string]interface{})
+					policy["artifact"].(map[string]interface{})["digest"] = "sha256:" + strings.Repeat("a", 64)
 				},
 			},
 			{
