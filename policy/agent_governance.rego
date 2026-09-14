@@ -9,9 +9,9 @@
 # digest verification already happened in the offline verifier; this gate
 # derives deployment admission from the verified statement facts.
 #
-# fail-closed structure: `allow` is derived POSITIVELY from required facts
-# (never from the absence of violations), so a malformed statement can only
-# make allow undefined/false. violations exist for attribution and reporting.
+# fail-closed structure: `allow` is derived from required facts plus a final
+# `count(violations) == 0` safety net. the positive conjuncts cover all
+# rejection conditions so violations exist solely for attribution and reporting.
 #
 # the runtime-policy digest inside the deployment predicate identifies the
 # policy governing the agent at runtime; it is distinct from the Auto Gov
@@ -128,6 +128,9 @@ valid_case_cardinality(s) if {
 	is_array(cases)
 	count(cases) >= 1
 	count(cases) <= 4
+	# ids and kinds must each be unique; set cardinality equals array length iff no duplicates
+	count({c.id | some c in cases}) == count(cases)
+	count({c.kind | some c in cases}) == count(cases)
 }
 
 controlled_tool_valid(s) if {
