@@ -1,5 +1,13 @@
 # Agent-governance companion
 
+> **Frozen reference implementation.** Active development has stopped at
+> `v0.1.0-alpha.3`. The repository stays public and unarchived because that
+> release is immutable, attested, and citable as a worked example — not because
+> more is coming. Issues remain open as recorded findings rather than a backlog,
+> and open pull requests will not be merged. See
+> [stewardship and current scope](#stewardship-and-current-scope) for why, and
+> where the ideas went instead.
+
 Experimental standalone repository for agent-deployment governance evidence.
 It provides no production assurance. [`autogov`](https://github.com/liatrio/autogov)
 remains the generic Sigstore verification, OPA admission, and VSA engine; this
@@ -113,6 +121,38 @@ source-repository independence was audited separately and is not continuously
 checked here. [`MOVE_MAP.md`](MOVE_MAP.md) records source history, and
 [`checkpoint.sha256.json`](checkpoint.sha256.json) locks the promotion
 baseline's deterministic outputs, policy digest, and frozen inputs.
+
+### Why development stopped
+
+Two reasons, recorded plainly so the state is not mistaken for neglect.
+
+The admission gate cannot change. `policy/agent_governance.rego` is a frozen
+input in an immutable *pre-extraction* manifest pinned to the `autogov` commit
+this code was promoted from. Regenerating that manifest to land a gate change
+would assert that a file written later was the file extracted then, which is a
+false provenance claim and exactly the failure this project exists to prevent.
+Issue [#20](https://github.com/liatrio/agent-governance-evidence/issues/20)
+records the structural gap and the options for closing it. Answering it is
+architecture work that precedes any feature work, and the features still
+outstanding are substantial: a second action class, a signed VSA, real Sigstore
+identity, and the soundness gaps in
+[#14](https://github.com/liatrio/agent-governance-evidence/issues/14) and
+[#16](https://github.com/liatrio/agent-governance-evidence/issues/16).
+
+The standardisation is happening elsewhere, and should. in-toto is actively
+designing agent decision receipts in
+[in-toto/attestation#549](https://github.com/in-toto/attestation/issues/549)
+and #554, motivated by the same record-keeping arguments used here — and #549
+already carries the `sequence` and `previousReceiptDigest` hash chain that is
+precisely the anti-replay primitive this gate lacks.
+[SCAI v0.3](https://github.com/in-toto/attestation/blob/main/spec/predicates/scai.md)
+covers adjacent ground and is already recognised by `autogov`. A single-maintainer
+predicate under a private namespace is the wrong vehicle for that work. The
+ideas worth keeping — separating *required* from *observed* intervention points
+and refusing to infer one from the other, never promoting an unknown outcome,
+rejecting an ambiguous pairing instead of tie-breaking it, and recording a
+provenance gap machine-readably so it cannot be quietly upgraded into a claim —
+are contributions to a specification, not to this codebase.
 
 ## Experimental publication
 
