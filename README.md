@@ -139,20 +139,28 @@ identity, and the soundness gaps in
 [#14](https://github.com/liatrio/agent-governance-evidence/issues/14) and
 [#16](https://github.com/liatrio/agent-governance-evidence/issues/16).
 
-The standardisation is happening elsewhere, and should. in-toto is actively
-designing agent decision receipts in
-[in-toto/attestation#549](https://github.com/in-toto/attestation/issues/549)
-and #554, motivated by the same record-keeping arguments used here — and #549
-already carries the `sequence` and `previousReceiptDigest` hash chain that is
-precisely the anti-replay primitive this gate lacks.
+The standardisation belongs elsewhere, and should — though it is further from
+settled than this section previously claimed. The Decision Receipt proposal,
+[in-toto/attestation#549](https://github.com/in-toto/attestation/pull/549), was
+a pull request, and it was closed unmerged on 2026-04-27 because the maintainers
+"believe the intent of this predicate can be achieved with a Simple Verification
+Result (SVR) predicate with extension fields". The `sequence` and
+`previousReceiptDigest` hash chain it carried — cited here previously as the
+anti-replay primitive this gate lacks — went with it and has no accepted home
+upstream; later proposals reinvent chaining independently and none has merged.
+[#554](https://github.com/in-toto/attestation/issues/554) is open but stalled: a
+maintainer asked what the predicate is for and where it sits in the supply
+chain, and the RFC has had no reply since July 2026.
 [SCAI v0.3](https://github.com/in-toto/attestation/blob/main/spec/predicates/scai.md)
 covers adjacent ground and is already recognised by `autogov`. A single-maintainer
-predicate under a private namespace is the wrong vehicle for that work. The
-ideas worth keeping — separating *required* from *observed* intervention points
-and refusing to infer one from the other, never promoting an unknown outcome,
-rejecting an ambiguous pairing instead of tie-breaking it, and recording a
-provenance gap machine-readably so it cannot be quietly upgraded into a claim —
-are contributions to a specification, not to this codebase.
+predicate under a private namespace is still the wrong vehicle for that work —
+more so when the maintainers' own answer is an existing predicate with extension
+fields rather than a new one. The ideas worth keeping — separating *required*
+from *observed* intervention points and refusing to infer one from the other,
+never promoting an unknown outcome, rejecting an ambiguous pairing instead of
+tie-breaking it, and recording a provenance gap machine-readably so it cannot
+be quietly upgraded into a claim — are contributions to a specification, not to
+this codebase.
 
 ## Experimental publication
 
